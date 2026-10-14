@@ -1,0 +1,14 @@
+{
+  "title": "Pedidos de Compra - TECAR",
+  "description": "Manage and consult inventory with real-time filtered search, paginated results, and detailed cost data, ensuring up-to-date stock visibility for all users.",
+  "robots": {
+    "index": false
+  },
+  "icons": {
+    "icon": "/.figma/make/favicon.png"
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
