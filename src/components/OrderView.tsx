@@ -4,15 +4,17 @@ import { formatCurrency, formatDate } from "../lib/format";
 import { downloadOrderPDF, printOrderPDF } from "../lib/pdf";
 import { useAuth } from "../contexts/AuthContext";
 import InvoiceNumberEditor from "./InvoiceNumberEditor";
+import PageHeader from "./PageHeader";
 
 interface Props {
   orderId: string;
   onBack: () => void;
   onEdit: () => void;
+  onDuplicate: () => void;
   canEdit: boolean;
 }
 
-export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
+export default function OrderView({ orderId, onBack, onEdit, onDuplicate, canEdit }: Props) {
   const { profile } = useAuth();
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -29,16 +31,21 @@ export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="text-slate-500 hover:text-slate-800 cursor-pointer transition">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+      <PageHeader
+        onBack={onBack}
+        title={`Pedido Nº ${order.order_number}`}
+        actions={
+          <>
+          <button
+            type="button"
+            onClick={onDuplicate}
+            className="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 8h10a2 2 0 0 1 2 2v10H10a2 2 0 0 1-2-2V8Zm0 8H4V4h12v4" />
             </svg>
+            Duplicar
           </button>
-          <h1 className="text-lg font-bold text-slate-800">Pedido Nº {order.order_number}</h1>
-        </div>
-        <div className="flex gap-2">
           <button
             type="button"
             disabled={printing}
@@ -80,11 +87,12 @@ export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
               Editar
             </button>
           )}
-        </div>
-      </div>
+          </>
+        }
+      />
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="bg-slate-900 px-6 py-5 text-center">
+        <div className="order-brand-header px-6 py-5 text-center">
           <p className="text-blue-400 text-xs font-mono tracking-wider font-semibold">02 - TECAR FIAT BSB W3</p>
           <p className="text-slate-300 text-xs mt-1">SEP/N QUADRA 512 CONJUNTO C</p>
           <p className="text-slate-300 text-xs">Brasília-DF · Cep 70760500</p>
@@ -110,7 +118,7 @@ export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
             </div>
             <div>
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-0.5">Feito por</p>
-              <p className="text-slate-800">{order.created_by_name}</p>
+              <p className="text-slate-800">{order.created_by_name || "Não identificado"}</p>
             </div>
             <div className="md:col-span-2">
               <InvoiceNumberEditor
@@ -126,7 +134,7 @@ export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
           <div className="order-items-wrap overflow-x-auto">
             <table className="order-items-table w-full text-xs border border-slate-200 rounded-xl overflow-hidden">
               <thead>
-                <tr className="bg-slate-900 text-slate-300">
+                <tr className="table-header text-slate-300">
                   <th className="px-3 py-2.5 text-center font-medium">Qtde</th>
                   <th className="px-3 py-2.5 text-center font-medium">Un</th>
                   <th className="px-3 py-2.5 text-left font-medium">Código/Desenho</th>
@@ -169,7 +177,12 @@ export default function OrderView({ orderId, onBack, onEdit, canEdit }: Props) {
           )}
 
           <div className="mt-6 pt-3 border-t border-slate-100 text-xs text-slate-400 flex justify-between">
-            <span>Feito por: <span className="font-medium text-slate-600">{order.created_by_name}</span></span>
+            <span>
+              Feito por:{" "}
+              <span className="font-medium text-slate-600">
+                {order.created_by_name || "Não identificado"}
+              </span>
+            </span>
             <span>Emitido em: <span className="font-medium text-slate-600">{formatDate(order.issued_at)}</span></span>
           </div>
         </div>

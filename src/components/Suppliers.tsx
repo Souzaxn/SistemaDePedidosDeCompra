@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { suppliersApi } from "../lib/api";
 import SupplierModal from "./SupplierModal";
+import PageHeader from "./PageHeader";
 
 const PAGE_SIZE = 10;
 
@@ -49,6 +50,16 @@ export default function Suppliers() {
   }, [query, page]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDeleting(null);
+        setEditing(undefined);
+      }
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const canDelete = (supplier: Supplier) =>
@@ -56,11 +67,10 @@ export default function Suppliers() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Fornecedores</h1>
-          <p className="mt-0.5 text-sm text-slate-500">Cadastro compartilhado de fornecedores</p>
-        </div>
+      <PageHeader
+        title="Fornecedores"
+        subtitle="Cadastro compartilhado de fornecedores"
+        actions={
         <button
           type="button"
           onClick={() => setEditing(null)}
@@ -68,10 +78,12 @@ export default function Suppliers() {
         >
           Novo fornecedor
         </button>
-      </div>
+        }
+      />
       <div className="mb-5 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
         <label className="mb-1 block text-xs font-medium text-slate-500">Buscar por nome ou CNPJ</label>
         <input
+          data-page-search
           value={search}
           onChange={(event) => setSearch(event.target.value)}
           placeholder="Digite o nome ou CNPJ..."
@@ -85,7 +97,7 @@ export default function Suppliers() {
         ) : (
           <table className="orders-table w-full min-w-[44rem]">
             <thead>
-              <tr className="bg-slate-900 text-xs text-slate-300">
+              <tr className="table-header text-xs text-slate-300">
                 <th className="px-4 py-3 text-left font-medium">Nome</th>
                 <th className="px-4 py-3 text-left font-medium">CNPJ</th>
                 <th className="px-4 py-3 text-left font-medium">Telefone</th>

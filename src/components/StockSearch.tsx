@@ -3,6 +3,7 @@ import { stockApi } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StockImport, StockItem } from "../lib/items";
 import { STOCK_STALE_DAYS } from "../lib/stock";
+import PageHeader from "./PageHeader";
 
 const DEFAULT_PAGE_SIZE = 10;
 
@@ -33,6 +34,7 @@ const getVisiblePages = (current: number, total: number) => {
 };
 
 export default function StockSearch({ variant = "page", onClose, onBack, canAddToOrder = false }: Props) {
+  const isDrawer = variant === "drawer";
   const [code, setCode] = useState("");
   const [description, setDescription] = useState("");
   const [location, setLocation] = useState("");
@@ -48,11 +50,16 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
   const [error, setError] = useState("");
   const [addedKey, setAddedKey] = useState("");
   const requestId = useRef(0);
+  const codeInputRef = useRef<HTMLInputElement>(null);
+  const resultRows = useRef<Array<HTMLTableRowElement | null>>([]);
+  const lastAddAt = useRef(0);
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setPage(1);
       setFilters({ code, description, location });
+      setSelectedIndex(null);
     }, 300);
     return () => window.clearTimeout(timer);
   }, [code, description, location]);
@@ -82,6 +89,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
         return;
       }
       setItems(result.items);
+      setSelectedIndex(null);
       setTotal(result.total);
     } catch (caught: any) {
       if (currentRequest !== requestId.current) return;
@@ -97,6 +105,11 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!isDrawer || selectedIndex === null) return;
+    document.querySelector(".stock-selected-row")?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex, isDrawer]);
+
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const rangeStart = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const rangeEnd = Math.min(page * pageSize, total);
@@ -111,9 +124,9 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
     setDirection("asc");
     setPage(1);
     setFilters({ code: "", description: "", location: "" });
+    setSelectedIndex(null);
   };
 
-  const isDrawer = variant === "drawer";
   const staleDays = latestImport
     ? Math.floor((Date.now() - new Date(latestImport.imported_at).getTime()) / 86_400_000)
     : null;
@@ -135,54 +148,89 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
   );
 
   const addToOrder = (item: StockItem) => {
+    const now = Date.now();
+    if (now - lastAddAt.current < 400) return false;
+    lastAddAt.current = now;
     window.dispatchEvent(new CustomEvent("tecar:add-stock-item", { detail: item }));
     const key = `${item.codigo}-${item.locacao}`;
     setAddedKey(key);
     window.setTimeout(() => setAddedKey((current) => current === key ? "" : current), 1500);
+    return true;
+  };
+
+  const focusResult = (index: number) => {
+    setSelectedIndex(index);
+    window.requestAnimationFrame(() => {
+      const row = resultRows.current[index];
+      if (!row) return;
+      row.focus();
+      if (document.activeElement !== row) {
+        row.querySelector<HTMLButtonElement>("[data-stock-add]")?.focus();
+      }
+    });
+  };
+
+  const handleDrawerKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!isDrawer) return;
+    const target = event.target as HTMLElement;
+    const isFilter = target.matches("[data-stock-filter]");
+
+    if (event.key === "Enter" && isFilter) {
+      event.preventDefault();
+      setPage(1);
+      setFilters({ code, description, location });
+      setSelectedIndex(null);
+      return;
+    }
+    if (
+      (event.key === "ArrowDown" || event.key === "ArrowUp") &&
+      !target.matches("select, button")
+    ) {
+      event.preventDefault();
+      if (!items.length) return;
+      const next = selectedIndex === null
+        ? (event.key === "ArrowDown" ? 0 : items.length - 1)
+        : event.key === "ArrowDown"
+          ? Math.min(items.length - 1, selectedIndex + 1)
+          : Math.max(0, selectedIndex - 1);
+      focusResult(next);
+      return;
+    }
+    if (
+      event.key === "Enter" &&
+      !event.repeat &&
+      selectedIndex !== null &&
+      canAddToOrder &&
+      items[selectedIndex]
+    ) {
+      event.preventDefault();
+      if (addToOrder(items[selectedIndex])) setSelectedIndex(null);
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setSelectedIndex(null);
+      onClose?.();
+    }
   };
 
   return (
     <div
+      onKeyDown={handleDrawerKeyDown}
       className={
         isDrawer
           ? "stock-search-drawer h-full min-h-0 flex flex-col overflow-hidden"
           : "max-w-6xl mx-auto px-4 py-6"
       }
     >
-      <div
-        className={`flex justify-between gap-3 ${
-          isDrawer
-            ? "shrink-0 items-start px-4 pt-4"
-            : "flex-col sm:flex-row sm:items-end mb-6"
-        }`}
-      >
-        <div className={isDrawer ? "" : "flex items-start gap-3"}>
-          {!isDrawer && onBack && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="mt-0.5 shrink-0 text-slate-500 hover:text-slate-800 cursor-pointer transition"
-              aria-label="Voltar"
-              title="Voltar"
-            >
-              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19 8 12l7-7" />
-              </svg>
-            </button>
-          )}
+      {isDrawer ? (
+        <div className="flex shrink-0 items-start justify-between gap-3 px-4 pt-4">
           <div>
-            <h1 className={`${isDrawer ? "text-lg" : "text-xl"} font-bold text-slate-900`}>
-              Consultar estoque
-            </h1>
-            <p className={`${isDrawer ? "text-xs" : "text-sm"} text-slate-500 mt-0.5`}>
+            <h1 className="text-lg font-bold text-slate-900">Consultar estoque</h1>
+            <p className="mt-0.5 text-xs text-slate-500">
               Consulte códigos, locações e custos do estoque atual
             </p>
           </div>
-        </div>
-        {!isDrawer && (
-          freshness
-        )}
-        {isDrawer && (
           <button
             type="button"
             onClick={onClose}
@@ -205,8 +253,14 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
               />
             </svg>
           </button>
-        )}
-      </div>
+        </div>
+      ) : (
+        <PageHeader
+          title="Consultar estoque"
+          subtitle="Consulte códigos, locações e custos do estoque atual"
+          actions={freshness}
+        />
+      )}
 
       {isDrawer && (
         <div className="shrink-0 px-4 pt-2">{freshness}</div>
@@ -230,8 +284,15 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
               Código
             </label>
             <input
+              ref={codeInputRef}
+              data-stock-code
+              data-stock-filter
+              data-page-search
               value={code}
-              onChange={(event) => setCode(event.target.value)}
+              onChange={(event) => {
+                setCode(event.target.value);
+                setSelectedIndex(null);
+              }}
               placeholder={isDrawer ? "Digite o código" : "Digite parte do código..."}
               className={`${isDrawer ? "h-9 text-[13px]" : "text-sm py-2"} w-full border border-slate-200 rounded-lg px-3 font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500`}
             />
@@ -241,8 +302,12 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
               Locação
             </label>
             <input
+              data-stock-filter
               value={location}
-              onChange={(event) => setLocation(event.target.value)}
+              onChange={(event) => {
+                setLocation(event.target.value);
+                setSelectedIndex(null);
+              }}
               placeholder="Digite a locação"
               className={`${isDrawer ? "h-9 text-[13px]" : "text-sm py-2"} w-full border border-slate-200 rounded-lg px-3 font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500`}
             />
@@ -252,8 +317,12 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
               Descrição
             </label>
             <input
+              data-stock-filter
               value={description}
-              onChange={(event) => setDescription(event.target.value)}
+              onChange={(event) => {
+                setDescription(event.target.value);
+                setSelectedIndex(null);
+              }}
               placeholder={isDrawer ? "Digite a descrição" : "Ex: para lama dian"}
               className={`${isDrawer ? "h-9 text-[13px]" : "text-sm py-2"} w-full border border-slate-200 rounded-lg px-3 text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500`}
             />
@@ -357,7 +426,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                 )}
               </colgroup>
               <thead className={isDrawer ? "sticky top-0 z-20" : ""}>
-                <tr className={`bg-slate-900 text-slate-300 ${isDrawer ? "text-xs" : "text-xs"}`}>
+                <tr className={`table-header text-slate-300 ${isDrawer ? "text-xs" : "text-xs"}`}>
                   <th className={`${isDrawer ? "px-2 py-2" : "px-4 py-3"} text-left font-medium`}>Código</th>
                   <th className={`${isDrawer ? "px-2 py-2" : "px-4 py-3"} text-left font-medium`}>Descrição</th>
                   <th className={`${isDrawer ? "px-2 py-2" : "px-4 py-3"} text-left font-medium`}>Locação</th>
@@ -371,12 +440,18 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                 </tr>
               </thead>
               <tbody>
-                {items.map((item) => {
+                {items.map((item, index) => {
                   const rowKey = `${item.codigo}-${item.locacao}`;
                   return (
                   <tr
                     key={rowKey}
-                    className={`order-row border-t ${isDrawer ? "text-[13px]" : "text-sm"}`}
+                    ref={(element) => {
+                      resultRows.current[index] = element;
+                    }}
+                    tabIndex={isDrawer ? -1 : undefined}
+                    className={`order-row border-t ${isDrawer ? "text-[13px]" : "text-sm"} ${
+                      isDrawer && selectedIndex === index ? "stock-selected-row" : ""
+                    }`}
                   >
                     <td className={`${isDrawer ? "px-2 py-2" : "px-4 py-3"} font-mono font-semibold text-blue-700`}>
                       {item.codigo}
@@ -397,6 +472,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                       <td className="px-1 py-2 text-center">
                         <button
                           type="button"
+                          data-stock-add
                           onClick={() => addToOrder(item)}
                           title="Adicionar ao pedido"
                           aria-label={`Adicionar ${item.codigo} ao pedido`}

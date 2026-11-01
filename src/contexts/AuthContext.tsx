@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
 import { User, Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { profileApi } from "../lib/api";
@@ -33,16 +33,26 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const profileRequest = useRef(0);
 
   const fetchProfile = async (u: User) => {
-    const name =
-      u.user_metadata?.full_name ||
-      u.user_metadata?.name ||
-      u.email?.split("@")[0] ||
-      "Usuário";
-    // Try to upsert profile (will fail if table not set up yet — handled gracefully)
-    const p = await profileApi.upsert(name, u.email || "");
-    if (p) setProfile(p as Profile);
+    const request = ++profileRequest.current;
+    const stored = await profileApi.getById(u.id);
+    if (request !== profileRequest.current) return;
+    if (stored) {
+      setProfile({
+        ...(stored as Profile),
+        name: String(stored.name || "").trim() || u.email || "",
+        email: String(stored.email || "").trim() || u.email || "",
+      });
+      return;
+    }
+    setProfile({
+      id: u.id,
+      name: u.email || "",
+      email: u.email || "",
+      is_admin: false,
+    });
   };
 
   useEffect(() => {
@@ -52,6 +62,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (s?.user) {
         fetchProfile(s.user).finally(() => setLoading(false));
       } else {
+        setProfile(null);
         setLoading(false);
       }
     });
@@ -60,8 +71,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setSession(s);
       setUser(s?.user ?? null);
       if (s?.user) {
+        setProfile(null);
         fetchProfile(s.user);
       } else {
+        profileRequest.current += 1;
         setProfile(null);
       }
     });

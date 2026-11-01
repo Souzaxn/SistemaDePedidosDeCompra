@@ -4,6 +4,7 @@ import { InvoiceOrder, notesApi, ordersApi, suppliersApi } from "../lib/api";
 import { formatCurrency, formatDate, formatDateOnly, formatDateTime } from "../lib/format";
 import { validateStandaloneInvoice } from "../lib/invoices";
 import InvoiceNumberEditor from "./InvoiceNumberEditor";
+import PageHeader from "./PageHeader";
 
 const PAGE_SIZE = 10;
 type StatusFilter = "pending" | "completed" | "all";
@@ -51,6 +52,13 @@ function StandaloneInvoiceModal({
       setRequestError(caught?.message || "Não foi possível carregar os fornecedores.");
     });
   }, []);
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, [onClose]);
 
   const focusField = (element: HTMLElement | null) => {
     element?.focus();
@@ -275,6 +283,16 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
     const timer = window.setTimeout(() => setUndo(null), 6000);
     return () => window.clearTimeout(timer);
   }, [undo]);
+  useEffect(() => {
+    const close = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setShowStandaloneForm(false);
+        setUndo(null);
+      }
+    };
+    window.addEventListener("keydown", close);
+    return () => window.removeEventListener("keydown", close);
+  }, []);
 
   const toggle = async (note: InvoiceOrder, checked: boolean) => {
     setNotes((current) =>
@@ -299,18 +317,10 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
 
   return (
     <div className="mx-auto max-w-6xl px-4 py-6">
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button type="button" onClick={onBack} className="text-slate-500 hover:text-slate-800">
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m15 19-7-7 7-7" />
-            </svg>
-          </button>
-          <div>
-            <h1 className="text-xl font-bold text-slate-900">Conferir Notas</h1>
-            <p className="mt-0.5 text-sm text-slate-500">Notas fiscais vinculadas e avulsas</p>
-          </div>
-        </div>
+      <PageHeader
+        title="Conferir Notas"
+        subtitle="Notas fiscais vinculadas e avulsas"
+        actions={
         <button
           type="button"
           onClick={() => setShowStandaloneForm(true)}
@@ -318,7 +328,8 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
         >
           Lançar nota avulsa
         </button>
-      </div>
+        }
+      />
 
       <div className="mb-5 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
         <div className="flex rounded-lg bg-slate-100 p-1">
@@ -342,6 +353,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
           ))}
         </div>
         <input
+          data-page-search
           value={search}
           onChange={(event) => updateParams({ q: event.target.value, page: 1 })}
           placeholder="Buscar fornecedor ou Nº da nota"
@@ -349,7 +361,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
         />
       </div>
 
-      <div className="relative min-h-80 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="invoice-notes-card relative min-h-80 overflow-hidden rounded-2xl bg-white shadow-sm">
         {loading ? (
           <div className="flex min-h-80 items-center justify-center text-sm text-slate-500">
             Carregando...
@@ -366,8 +378,8 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
             {emptyMessage(status)}
           </div>
         ) : (
-          <div className="divide-y divide-slate-100">
-            <div className="hidden grid-cols-[minmax(0,2fr)_1fr_1fr_1fr_auto_auto] gap-5 bg-slate-50 px-5 py-2 text-xs font-semibold text-slate-500 sm:grid">
+          <div className="invoice-notes-list">
+            <div className="invoice-notes-header hidden grid-cols-[minmax(0,2fr)_1fr_1fr_1fr_auto_auto] gap-5 bg-slate-50 px-5 py-2 text-xs font-semibold text-slate-500 sm:grid">
               <span>Fornecedor</span>
               <span>Nº da Nota</span>
               <span>Data de emissão</span>
@@ -384,15 +396,15 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
                 onKeyDown={(event) => {
                   if (event.key === "Enter") navigate(`/notas/${note.id}?${params.toString()}`);
                 }}
-                className={`grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-5 py-4 transition hover:bg-blue-50/50 ${
-                  note.nota_conferida ? "text-slate-400" : "text-slate-800"
+                className={`invoice-note-row grid cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-4 px-5 py-4 transition ${
+                  note.nota_conferida ? "is-completed text-slate-400" : "text-slate-800"
                 }`}
               >
                 <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,2fr)_1fr_1fr_1fr_auto] sm:items-center sm:gap-5">
-                  <p className="truncate text-sm font-semibold">{note.supplier_name}</p>
-                  <p className="text-xs font-mono">Nota {note.nota_numero}</p>
-                  <p className="text-xs font-mono">{formatDateOnly(note.issued_on)}</p>
-                  <p className="text-xs font-mono">
+                  <p className="invoice-note-supplier truncate text-sm font-semibold">{note.supplier_name}</p>
+                  <p className="invoice-note-number text-xs font-mono">Nota {note.nota_numero}</p>
+                  <p className="invoice-note-date text-xs font-mono">{formatDateOnly(note.issued_on)}</p>
+                  <p className="invoice-note-value text-xs font-mono">
                     {note.total == null ? "-" : formatCurrency(note.total)}
                   </p>
                   <p className="text-xs font-bold text-blue-700">
@@ -400,7 +412,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
                   </p>
                 </div>
                 <label
-                  className="flex items-center gap-2 text-xs font-medium"
+                  className="invoice-note-status flex items-center gap-2 text-xs font-medium"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <span className="hidden sm:inline">Concluído</span>
@@ -408,7 +420,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
                     type="checkbox"
                     checked={note.nota_conferida}
                     onChange={(event) => void toggle(note, event.target.checked)}
-                    className="h-5 w-5 accent-emerald-600"
+                    className="invoice-note-checkbox h-5 w-5"
                     aria-label={`Concluir nota ${note.nota_numero}`}
                   />
                 </label>
@@ -533,28 +545,16 @@ export function InvoiceNoteDetails({
 
   return (
     <div className="mx-auto max-w-5xl px-4 py-6">
-      <div className="mb-6 flex items-center justify-between gap-4">
-        <div className="flex items-center gap-3">
-          <button type="button" onClick={() => navigate(listUrl)} className="text-slate-500 hover:text-slate-800">
-            <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m15 19-7-7 7-7" />
-            </svg>
-          </button>
-          <div>
-            <h1 className="text-lg font-bold text-slate-800">
-              Nota {order.nota_numero || "sem número"}
-            </h1>
-            <p className="text-xs text-slate-500">
-              {order.note_type === "standalone" ? "Nota fiscal avulsa" : `Pedido #${order.order_number}`}
-            </p>
-          </div>
-        </div>
-        {order.note_type === "order" && (
+      <PageHeader
+        onBack={() => navigate(listUrl)}
+        title={`Nota ${order.nota_numero || "sem número"}`}
+        subtitle={order.note_type === "standalone" ? "Nota fiscal avulsa" : `Pedido #${order.order_number}`}
+        actions={order.note_type === "order" ? (
           <button type="button" onClick={onViewOrder} className="text-sm font-semibold text-blue-600 hover:underline">
             Ver pedido
           </button>
-        )}
-      </div>
+        ) : undefined}
+      />
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="grid gap-4 border-b border-slate-100 pb-5 md:grid-cols-3">
@@ -601,7 +601,9 @@ export function InvoiceNoteDetails({
           </div>
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Feito por</p>
-            <p className="text-sm text-slate-700">{order.created_by_name}</p>
+            <p className="text-sm text-slate-700">
+              {order.created_by_name || "Não identificado"}
+            </p>
           </div>
         </div>
 
@@ -609,7 +611,7 @@ export function InvoiceNoteDetails({
         <div className="mt-5 overflow-x-auto">
           <table className="order-items-table w-full text-xs">
             <thead>
-              <tr className="bg-slate-900 text-slate-300">
+              <tr className="table-header text-slate-300">
                 {["Qtde", "Un", "Código/Desenho", "Descrição", "Vl Unit", "Desc", "Acrés", "IPI", "Total"].map((label) => (
                   <th key={label} className="px-3 py-2.5 text-left font-medium">{label}</th>
                 ))}

@@ -6,6 +6,7 @@ import { formatCurrency, formatDate } from "../lib/format";
 import { formatCNPJ } from "../lib/cnpj";
 import { downloadOrderPDF, OrderItem, printOrderPDF } from "../lib/pdf";
 import SupplierModal from "./SupplierModal";
+import PageHeader from "./PageHeader";
 
 interface Supplier {
   id: string;
@@ -15,6 +16,7 @@ interface Supplier {
 
 interface Props {
   editId?: string | null;
+  duplicateId?: string | null;
   onSaved?: (notice?: string) => void;
   onBack: () => void;
 }
@@ -39,8 +41,8 @@ const calcItem = (item: OrderItem): OrderItem => {
   return { ...item, total: Math.max(0, total) };
 };
 
-export default function OrderForm({ editId, onSaved, onBack }: Props) {
-  const { profile } = useAuth();
+export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Props) {
+  const { profile, user } = useAuth();
   const [items, setItems] = useState<OrderItem[]>([newItem()]);
   const [supplierQuery, setSupplierQuery] = useState("");
   const [supplierSuggestions, setSupplierSuggestions] = useState<Supplier[]>([]);
@@ -60,11 +62,14 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
   const [draft, setDraft] = useState<{ payload: Record<string, any>; updated_at: string } | null>(null);
   const [draftSavedAt, setDraftSavedAt] = useState("");
   const [dirty, setDirty] = useState(false);
-  const [draftReady, setDraftReady] = useState(!!editId);
+  const [draftReady, setDraftReady] = useState(Boolean(editId || duplicateId));
   const [orderData, setOrderData] = useState<any>(null);
   const [emittedOrder, setEmittedOrder] = useState<any>(null);
   const [emittedNotice, setEmittedNotice] = useState("");
   const [printing, setPrinting] = useState(false);
+  const [sourceOrderNumber, setSourceOrderNumber] = useState<number | null>(null);
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [confirmEmit, setConfirmEmit] = useState(false);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const itemSearchTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const invoiceInputRef = useRef<HTMLInputElement>(null);
@@ -74,12 +79,36 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
   }, [editId]);
 
   useEffect(() => {
-    if (editId) return;
+    if (!duplicateId) return;
+    ordersApi.get(duplicateId)
+      .then((order) => {
+        setSourceOrderNumber(order.order_number);
+        setSupplierQuery(order.supplier_name);
+        setCnpj(order.supplier_cnpj);
+        setSelectedSupplier({
+          id: order.supplier_id || "",
+          name: order.supplier_name,
+          cnpj: order.supplier_cnpj,
+        });
+        setItems(order.items?.length
+          ? order.items.map((item: OrderItem) => ({ ...item, id: Math.random().toString(36).slice(2) }))
+          : [newItem()]);
+        setNotes(order.notes || "");
+        setInvoiceNumber("");
+        setInitialInvoiceNumber("");
+        setInvoiceTouched(false);
+        setDirty(false);
+      })
+      .catch(() => setError("Erro ao carregar o pedido para duplicação."));
+  }, [duplicateId]);
+
+  useEffect(() => {
+    if (editId || duplicateId) return;
     draftsApi.getMine()
       .then(setDraft)
       .catch(() => setDraft(null))
       .finally(() => setDraftReady(true));
-  }, [editId]);
+  }, [editId, duplicateId]);
 
   useEffect(() => {
     const addStockItem = (event: Event) => {
@@ -118,7 +147,7 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
   }, []);
 
   useEffect(() => {
-    if (editId || !draftReady || !dirty) return;
+    if (editId || duplicateId || !draftReady || !dirty) return;
     const hasData =
       supplierQuery.trim() ||
       cnpj.trim() ||
@@ -143,7 +172,7 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
       }
     }, 2000);
     return () => window.clearTimeout(timer);
-  }, [editId, draftReady, dirty, supplierQuery, selectedSupplier, cnpj, items, notes, invoiceNumber]);
+  }, [editId, duplicateId, draftReady, dirty, supplierQuery, selectedSupplier, cnpj, items, notes, invoiceNumber]);
 
   useEffect(() => {
     if (!dirty) return;
@@ -247,7 +276,19 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
     }, 300);
   };
 
-  const addItem = () => { setDirty(true); setItems((prev) => [...prev, newItem()]); };
+  const focusItemField = (id: string, field: string) => {
+    window.requestAnimationFrame(() => {
+      document.querySelector<HTMLInputElement>(
+        `[data-item-id="${id}"][data-item-field="${field}"]`,
+      )?.focus();
+    });
+  };
+  const addItem = (focus = false, empty = false) => {
+    const item = empty ? { ...newItem(), qty: 0, unit: "" } : newItem();
+    setDirty(true);
+    setItems((prev) => [...prev, item]);
+    if (focus) focusItemField(item.id, "qty");
+  };
   const removeItem = (id: string) => { setDirty(true); setItems((prev) => prev.filter((i) => i.id !== id)); };
 
   const total = items.reduce((sum, i) => sum + i.total, 0);
@@ -306,8 +347,8 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
           update_note: invoiceTouched,
         });
       } else {
-        savedOrder = await ordersApi.create({ ...payload, created_by_name: profile?.name || "Usuário" });
-        await draftsApi.deleteMine().catch(() => undefined);
+        savedOrder = await ordersApi.create(payload);
+        if (!duplicateId) await draftsApi.deleteMine().catch(() => undefined);
       }
       window.dispatchEvent(new Event("tecar:notes-changed"));
 
@@ -341,6 +382,58 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
     }
   };
 
+  const itemFields = ["qty", "unit", "code", "description", "unit_price", "discount", "addition", "ipi"];
+  const handleItemEnter = (event: React.KeyboardEvent<HTMLInputElement>, itemId: string, field: string) => {
+    if (event.key !== "Enter" || event.ctrlKey || event.metaKey) return;
+    event.preventDefault();
+    const rowIndex = items.findIndex((item) => item.id === itemId);
+    const fieldIndex = itemFields.indexOf(field);
+    if (fieldIndex < itemFields.length - 1) {
+      focusItemField(itemId, itemFields[fieldIndex + 1]);
+    } else if (rowIndex < items.length - 1) {
+      focusItemField(items[rowIndex + 1].id, "qty");
+    } else {
+      addItem(true, true);
+    }
+  };
+
+  useEffect(() => {
+    const shortcuts = (event: KeyboardEvent) => {
+      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        addItem(true);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        if (editId) void handleSave();
+        else setConfirmEmit(true);
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key === "/") {
+        event.preventDefault();
+        setShowShortcuts(true);
+        return;
+      }
+      if (event.key === "Escape") {
+        if (emittedOrder) {
+          onSaved?.(emittedNotice || undefined);
+          return;
+        }
+        setShowShortcuts(false);
+        setConfirmEmit(false);
+        setDuplicateWarning(null);
+      }
+      if (confirmEmit && event.key === "Enter") {
+        event.preventDefault();
+        setConfirmEmit(false);
+        void handleSave();
+      }
+    };
+    window.addEventListener("keydown", shortcuts);
+    return () => window.removeEventListener("keydown", shortcuts);
+  });
+
   const handlePDF = () => {
     const data = orderData
       ? { ...orderData, items, total, supplier_name: supplierQuery, supplier_cnpj: cnpj, notes }
@@ -352,7 +445,7 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
           items,
           total,
           notes,
-          created_by_name: profile?.name || "",
+          created_by_name: profile?.name?.trim() || user?.email || "Não identificado",
         };
     downloadOrderPDF(data);
   };
@@ -365,17 +458,30 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
       value={val || ""}
       placeholder={placeholder}
       onChange={(e) => updateItem(id, field, parseFloat(e.target.value) || 0)}
+      onKeyDown={(event) => handleItemEnter(event, id, field)}
+      data-item-id={id}
+      data-item-field={field}
       className="w-full border border-slate-200 rounded px-2 py-1.5 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-blue-400"
     />
   );
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
+      {sourceOrderNumber !== null && (
+        <div className="mb-4 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          Pedido duplicado a partir do #{sourceOrderNumber}. Revise os dados antes de emitir.
+        </div>
+      )}
       {!editId && draft && (
-        <div className="mb-4 flex flex-col gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 sm:flex-row sm:items-center sm:justify-between">
-          <span>
-            Você tem um rascunho não finalizado de {formatDate(draft.updated_at)} às{" "}
-            {new Date(draft.updated_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })}
+        <div className="draft-notice mb-4 flex flex-col gap-3 rounded-xl border px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+          <span className="draft-notice-copy">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm7 0v5h5M9 13h6m-6 4h4" />
+            </svg>
+            <span>
+              Você tem um rascunho não finalizado de {formatDate(draft.updated_at)} às{" "}
+              <strong>{new Date(draft.updated_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })}</strong>
+            </span>
           </span>
           <div className="flex gap-2">
             <button
@@ -391,32 +497,25 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                 setDraft(null);
                 setDirty(false);
               }}
-              className="rounded-lg bg-amber-600 px-3 py-1.5 text-xs font-semibold text-white cursor-pointer"
+              className="draft-continue rounded-lg px-3 py-1.5 text-xs font-semibold cursor-pointer"
             >
               Continuar
             </button>
             <button
               type="button"
               onClick={() => void draftsApi.deleteMine().then(() => setDraft(null))}
-              className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs font-semibold cursor-pointer"
+              className="draft-discard rounded-lg border px-3 py-1.5 text-xs font-semibold cursor-pointer"
             >
               Descartar
             </button>
           </div>
         </div>
       )}
-      <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center gap-3">
-          <button onClick={onBack} className="text-slate-500 hover:text-slate-800 cursor-pointer transition">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-            </svg>
-          </button>
-          <h1 className="text-lg font-bold text-slate-800">
-            {editId ? `Editar Pedido #${orderData?.order_number ?? ""}` : "Novo Pedido de Compra"}
-          </h1>
-        </div>
-        <div className="flex items-center gap-2">
+      <PageHeader
+        onBack={onBack}
+        title={editId ? `Editar Pedido #${orderData?.order_number ?? ""}` : "Novo Pedido de Compra"}
+        actions={
+          <>
           {!editId && draftSavedAt && (
             <span className="hidden text-xs text-slate-500 sm:inline">
               Rascunho salvo às {new Date(draftSavedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo" })}
@@ -436,12 +535,14 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
           <button
             onClick={() => void handleSave()}
             disabled={saving}
+            title={editId ? "Salvar alterações (Ctrl+S)" : "Emitir pedido (Ctrl+S)"}
             className="bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300 text-white font-semibold rounded-lg px-5 py-2 text-sm transition cursor-pointer disabled:cursor-not-allowed"
           >
             {saving ? "Salvando..." : editId ? "Salvar Alterações" : "Emitir Pedido"}
           </button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-4">
@@ -450,7 +551,7 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
       )}
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
-        <div className="bg-slate-900 px-6 py-4 text-center">
+        <div className="order-brand-header px-6 py-4 text-center">
           <p className="text-blue-400 text-xs font-mono tracking-wider">02 - TECAR FIAT BSB W3</p>
           <p className="text-slate-300 text-xs mt-0.5">SEP/N QUADRA 512 CONJUNTO C · Brasília-DF · Cep 70760500</p>
           <p className="text-slate-400 text-xs">(61) 2196-2900 · CGC 07.757.357/0001-68</p>
@@ -476,12 +577,12 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                     className="w-full border border-slate-200 rounded-lg px-3 py-2.5 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
                   {showSuggestions && supplierSuggestions.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 z-20 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg overflow-hidden">
+                    <div className="supplier-suggestions absolute top-full left-0 right-0 z-20 mt-1 overflow-hidden">
                       {supplierSuggestions.map((s) => (
                         <div
                           key={s.id}
                           onMouseDown={() => selectSupplier(s)}
-                          className="px-4 py-3 text-sm cursor-pointer hover:bg-blue-50 flex items-center justify-between"
+                          className="supplier-suggestion flex cursor-pointer items-center justify-between px-4 py-3 text-sm"
                         >
                           <span className="font-medium text-slate-800">{s.name}</span>
                           <span className="text-slate-400 text-xs font-mono">{s.cnpj}</span>
@@ -573,7 +674,8 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
             <div className="flex items-center justify-between mb-2">
               <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Itens do Pedido</label>
               <button
-                onClick={addItem}
+                onClick={() => addItem()}
+                title="Adicionar item (Ctrl+Enter)"
                 className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 font-medium cursor-pointer transition"
               >
                 <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -585,7 +687,7 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
             <div className="order-items-wrap border border-slate-200 rounded-xl overflow-x-auto">
               <table className="order-items-table w-full text-xs">
                 <thead>
-                  <tr className="bg-slate-900 text-slate-300">
+                  <tr className="table-header text-slate-300">
                     <th className="px-2 py-2 text-center font-medium w-14">Qtde</th>
                     <th className="px-2 py-2 text-center font-medium w-14">Un</th>
                     <th className="px-2 py-2 text-left font-medium w-28">Cód/Desenho</th>
@@ -606,6 +708,9 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                         <input
                           value={item.unit}
                           onChange={(e) => updateItem(item.id, "unit", e.target.value.toUpperCase())}
+                          onKeyDown={(event) => handleItemEnter(event, item.id, "unit")}
+                          data-item-id={item.id}
+                          data-item-field="unit"
                           className="w-full border border-slate-200 rounded px-2 py-1.5 text-xs text-center uppercase focus:outline-none focus:ring-1 focus:ring-blue-400"
                           maxLength={4}
                           placeholder="UN"
@@ -615,6 +720,9 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                         <input
                           value={item.code}
                           onChange={(e) => lookupItem(item.id, e.target.value)}
+                          onKeyDown={(event) => handleItemEnter(event, item.id, "code")}
+                          data-item-id={item.id}
+                          data-item-field="code"
                           className="w-full border border-slate-200 rounded px-2 py-1.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-400"
                           placeholder="ABC-123"
                         />
@@ -623,6 +731,9 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                         <input
                           value={item.description}
                           onChange={(e) => updateItem(item.id, "description", e.target.value)}
+                          onKeyDown={(event) => handleItemEnter(event, item.id, "description")}
+                          data-item-id={item.id}
+                          data-item-field="description"
                           className="w-full border border-slate-200 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-400"
                           placeholder="Descrição do produto..."
                         />
@@ -671,8 +782,16 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
             />
           </div>
 
-          <div className="border-t border-slate-200 pt-3 text-xs text-slate-400 flex justify-between">
-            <span>Feito por: <span className="font-medium text-slate-600">{orderData?.created_by_name || profile?.name}</span></span>
+          <div className="border-t border-slate-200 pt-3 text-xs text-slate-400 flex flex-wrap justify-between gap-3">
+            <span>
+              Feito por:{" "}
+              <span className="font-medium text-slate-600">
+                {orderData?.created_by_name || profile?.name?.trim() || user?.email || "Não identificado"}
+              </span>
+            </span>
+            <button type="button" onClick={() => setShowShortcuts(true)} className="hover:text-blue-600">
+              Atalhos (Ctrl+/)
+            </button>
             {!editId && <span className="italic">Número e data gerados ao emitir</span>}
           </div>
         </div>
@@ -714,6 +833,37 @@ export default function OrderForm({ editId, onSaved, onBack }: Props) {
                 Continuar
               </button>
             </div>
+          </div>
+        </div>
+      )}
+      {confirmEmit && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/40 p-4">
+          <div role="dialog" aria-modal="true" className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+            <h2 className="text-base font-bold text-slate-800">Emitir o pedido?</h2>
+            <p className="mt-2 text-sm text-slate-500">Pressione Enter para confirmar ou Esc para cancelar.</p>
+            <div className="mt-5 flex gap-3">
+              <button type="button" onClick={() => setConfirmEmit(false)} className="flex-1 rounded-lg border border-slate-200 py-2.5 text-sm">Cancelar</button>
+              <button type="button" onClick={() => { setConfirmEmit(false); void handleSave(); }} className="flex-1 rounded-lg bg-blue-600 py-2.5 text-sm font-semibold text-white">Emitir</button>
+            </div>
+          </div>
+        </div>
+      )}
+      {showShortcuts && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 p-4">
+          <div role="dialog" aria-modal="true" aria-labelledby="shortcuts-title" className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
+            <div className="flex items-center justify-between">
+              <h2 id="shortcuts-title" className="text-lg font-bold text-slate-800">Atalhos de teclado</h2>
+              <button type="button" onClick={() => setShowShortcuts(false)} className="text-slate-400 hover:text-slate-700" aria-label="Fechar">×</button>
+            </div>
+            <dl className="mt-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
+              <dt className="font-mono font-semibold text-slate-700">Enter</dt><dd className="text-slate-500">Próximo campo do item</dd>
+              <dt className="font-mono font-semibold text-slate-700">Ctrl+Enter</dt><dd className="text-slate-500">Adicionar nova linha</dd>
+              <dt className="font-mono font-semibold text-slate-700">F2</dt><dd className="text-slate-500">Abrir ou fechar a consulta de estoque</dd>
+              <dt className="font-mono font-semibold text-slate-700">↑ / ↓ + Enter</dt><dd className="text-slate-500">Selecionar e adicionar item do estoque</dd>
+              <dt className="font-mono font-semibold text-slate-700">Ctrl+S</dt><dd className="text-slate-500">{editId ? "Salvar edição" : "Emitir pedido"}</dd>
+              <dt className="font-mono font-semibold text-slate-700">Ctrl+/</dt><dd className="text-slate-500">Mostrar estes atalhos</dd>
+              <dt className="font-mono font-semibold text-slate-700">Esc</dt><dd className="text-slate-500">Fechar janelas e painéis</dd>
+            </dl>
           </div>
         </div>
       )}

@@ -225,7 +225,9 @@ ALTER TABLE public.purchase_orders_tecar
   ADD COLUMN IF NOT EXISTS nota_numero TEXT,
   ADD COLUMN IF NOT EXISTS nota_conferida BOOLEAN NOT NULL DEFAULT false,
   ADD COLUMN IF NOT EXISTS nota_conferida_por TEXT,
-  ADD COLUMN IF NOT EXISTS nota_conferida_em TIMESTAMPTZ;
+  ADD COLUMN IF NOT EXISTS nota_conferida_em TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS excluido_em TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS excluido_por TEXT;
 DO $$ BEGIN
   ALTER TABLE public.purchase_orders_tecar
     ADD CONSTRAINT purchase_orders_supplier_fk
@@ -283,6 +285,23 @@ CREATE INDEX IF NOT EXISTS purchase_orders_tecar_nota_numero_idx
   ON public.purchase_orders_tecar (nota_numero);
 CREATE INDEX IF NOT EXISTS purchase_orders_tecar_nota_conferida_idx
   ON public.purchase_orders_tecar (nota_conferida);
+CREATE INDEX IF NOT EXISTS purchase_orders_tecar_excluido_em_idx
+  ON public.purchase_orders_tecar (excluido_em);
+
+CREATE OR REPLACE FUNCTION public.codigos_pedido_tecar(p_items JSONB)
+RETURNS TEXT[]
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = public
+AS $$
+  SELECT COALESCE(
+    array_agg(DISTINCT upper(regexp_replace(item->>'code', '\s', '', 'g')))
+      FILTER (WHERE NULLIF(regexp_replace(item->>'code', '\s', '', 'g'), '') IS NOT NULL),
+    ARRAY[]::TEXT[]
+  )
+  FROM jsonb_array_elements(COALESCE(p_items, '[]'::JSONB)) item;
+$$;
+CREATE INDEX IF NOT EXISTS purchase_orders_tecar_item_codes_idx
+  ON public.purchase_orders_tecar USING gin (public.codigos_pedido_tecar(items));
 
 -- Exige nota em novos pedidos feitos por usuários autenticados e impede apagar
 -- uma nota existente. Pedidos legados sem nota e restaurações continuam válidos.
@@ -330,6 +349,7 @@ AS $$
     SELECT p.*
     FROM public.purchase_orders_tecar p
     WHERE NULLIF(trim(p.nota_numero), '') IS NOT NULL
+      AND p.excluido_em IS NULL
       AND (
         lower(COALESCE(p_status, 'pending')) = 'all'
         OR (lower(COALESCE(p_status, 'pending')) = 'completed' AND p.nota_conferida)
@@ -380,7 +400,7 @@ BEGIN
       nota_conferida = CASE WHEN p.nota_numero IS DISTINCT FROM v_numero THEN false ELSE p.nota_conferida END,
       nota_conferida_por = CASE WHEN p.nota_numero IS DISTINCT FROM v_numero THEN NULL ELSE p.nota_conferida_por END,
       nota_conferida_em = CASE WHEN p.nota_numero IS DISTINCT FROM v_numero THEN NULL ELSE p.nota_conferida_em END
-  WHERE p.id = p_pedido_id
+  WHERE p.id = p_pedido_id AND p.excluido_em IS NULL
   RETURNING p.supplier_id, p.supplier_cnpj
   INTO v_supplier_id, v_supplier_cnpj;
 
@@ -393,6 +413,7 @@ BEGIN
       SELECT d.order_number
       FROM public.purchase_orders_tecar d
       WHERE d.id <> p.id
+        AND d.excluido_em IS NULL
         AND lower(trim(d.nota_numero)) = lower(trim(p.nota_numero))
         AND (
           (v_supplier_id IS NOT NULL AND d.supplier_id = v_supplier_id)
@@ -403,7 +424,7 @@ BEGIN
       LIMIT 1
     )
   FROM public.purchase_orders_tecar p
-  WHERE p.id = p_pedido_id;
+  WHERE p.id = p_pedido_id AND p.excluido_em IS NULL;
 END;
 $$;
 
@@ -429,6 +450,7 @@ BEGIN
       nota_conferida_por = CASE WHEN COALESCE(p_conferida, false) THEN COALESCE(v_nome, 'Usuário') ELSE NULL END,
       nota_conferida_em = CASE WHEN COALESCE(p_conferida, false) THEN now() ELSE NULL END
   WHERE p.id = p_pedido_id
+    AND p.excluido_em IS NULL
     AND NULLIF(trim(p.nota_numero), '') IS NOT NULL
   RETURNING p.nota_conferida, p.nota_conferida_por, p.nota_conferida_em;
 
@@ -510,6 +532,7 @@ AS $$
       p.nota_conferida_em, p.created_at
     FROM public.purchase_orders_tecar p
     WHERE NULLIF(trim(p.nota_numero), '') IS NOT NULL
+      AND p.excluido_em IS NULL
     UNION ALL
     SELECT n.id, 'standalone'::TEXT, NULL::INT,
       s.name, s.cnpj, n.issued_on, n.total, n.nota_numero,
@@ -571,6 +594,151 @@ BEGIN
 END;
 $$;
 
+-- Lixeira de pedidos. O UUID do usuário é guardado como texto para que a
+-- restauração possa validar exatamente quem moveu o pedido.
+CREATE OR REPLACE FUNCTION public.usuario_admin_tecar()
+RETURNS BOOLEAN
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.profiles_tecar
+    WHERE id = auth.uid() AND is_admin = true
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION public.mover_pedido_lixeira_tecar(p_pedido_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN RAISE EXCEPTION 'Usuário não autenticado'; END IF;
+  UPDATE public.purchase_orders_tecar p
+  SET excluido_em = now(), excluido_por = auth.uid()::TEXT
+  WHERE p.id = p_pedido_id
+    AND p.excluido_em IS NULL
+    AND (p.created_by = auth.uid() OR public.usuario_admin_tecar());
+  IF NOT FOUND THEN RAISE EXCEPTION 'Pedido não encontrado ou sem permissão'; END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.restaurar_pedido_lixeira_tecar(p_pedido_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL THEN RAISE EXCEPTION 'Usuário não autenticado'; END IF;
+  UPDATE public.purchase_orders_tecar p
+  SET excluido_em = NULL, excluido_por = NULL
+  WHERE p.id = p_pedido_id
+    AND p.excluido_em IS NOT NULL
+    AND (p.excluido_por = auth.uid()::TEXT OR public.usuario_admin_tecar());
+  IF NOT FOUND THEN RAISE EXCEPTION 'Pedido não encontrado ou sem permissão'; END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.excluir_pedido_definitivamente_tecar(p_pedido_id UUID)
+RETURNS VOID
+LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF auth.uid() IS NULL OR NOT public.usuario_admin_tecar() THEN
+    RAISE EXCEPTION 'Somente administradores podem excluir definitivamente';
+  END IF;
+  DELETE FROM public.purchase_orders_tecar p
+  WHERE p.id = p_pedido_id AND p.excluido_em IS NOT NULL;
+  IF NOT FOUND THEN RAISE EXCEPTION 'Pedido não encontrado na lixeira'; END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.listar_lixeira_tecar(
+  p_limite INT DEFAULT 10,
+  p_deslocamento INT DEFAULT 0
+)
+RETURNS TABLE (
+  id UUID, order_number INT, supplier_name TEXT, total NUMERIC,
+  created_by_name TEXT, excluido_por_nome TEXT, excluido_em TIMESTAMPTZ,
+  total_count BIGINT
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT p.id, p.order_number, p.supplier_name, p.total, p.created_by_name,
+    COALESCE(NULLIF(trim(perfil.name), ''), NULLIF(trim(perfil.email), ''), p.excluido_por),
+    p.excluido_em, count(*) OVER ()
+  FROM public.purchase_orders_tecar p
+  LEFT JOIN public.profiles_tecar perfil
+    ON perfil.id::TEXT = p.excluido_por
+  WHERE auth.uid() IS NOT NULL
+    AND p.excluido_em IS NOT NULL
+    AND (p.excluido_por = auth.uid()::TEXT OR public.usuario_admin_tecar())
+  ORDER BY p.excluido_em DESC, p.order_number DESC
+  LIMIT GREATEST(p_limite, 1)
+  OFFSET GREATEST(p_deslocamento, 0);
+$$;
+
+CREATE OR REPLACE FUNCTION public.contar_lixeira_tecar()
+RETURNS BIGINT
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT count(*)
+  FROM public.purchase_orders_tecar p
+  WHERE auth.uid() IS NOT NULL
+    AND p.excluido_em IS NOT NULL
+    AND (p.excluido_por = auth.uid()::TEXT OR public.usuario_admin_tecar());
+$$;
+
+CREATE OR REPLACE FUNCTION public.buscar_ultimo_preco_tecar(
+  p_codigo TEXT,
+  p_supplier_id UUID DEFAULT NULL,
+  p_supplier_cnpj TEXT DEFAULT '',
+  p_excluir_pedido_id UUID DEFAULT NULL
+)
+RETURNS TABLE (
+  valor NUMERIC, issued_at TIMESTAMPTZ, supplier_name TEXT,
+  mesmo_fornecedor BOOLEAN
+)
+LANGUAGE sql STABLE SECURITY DEFINER
+SET search_path = public
+AS $$
+  WITH parametros AS (
+    SELECT upper(regexp_replace(COALESCE(p_codigo, ''), '\s', '', 'g')) AS codigo
+  ),
+  candidatos AS (
+    SELECT
+      NULLIF(item->>'unit_price', '')::NUMERIC AS valor,
+      p.issued_at,
+      p.order_number,
+      p.supplier_name,
+      (
+        (p_supplier_id IS NOT NULL AND p.supplier_id = p_supplier_id)
+        OR (
+          regexp_replace(COALESCE(p_supplier_cnpj, ''), '\D', '', 'g') <> ''
+          AND regexp_replace(p.supplier_cnpj, '\D', '', 'g')
+            = regexp_replace(COALESCE(p_supplier_cnpj, ''), '\D', '', 'g')
+        )
+      ) AS mesmo_fornecedor
+    FROM public.purchase_orders_tecar p
+    CROSS JOIN parametros prm
+    CROSS JOIN LATERAL jsonb_array_elements(p.items) item
+    WHERE auth.uid() IS NOT NULL
+      AND prm.codigo <> ''
+      AND p.excluido_em IS NULL
+      AND (p_excluir_pedido_id IS NULL OR p.id <> p_excluir_pedido_id)
+      AND public.codigos_pedido_tecar(p.items) @> ARRAY[prm.codigo]
+      AND upper(regexp_replace(COALESCE(item->>'code', ''), '\s', '', 'g')) = prm.codigo
+      AND NULLIF(item->>'unit_price', '') IS NOT NULL
+  )
+  SELECT c.valor, c.issued_at, c.supplier_name, c.mesmo_fornecedor
+  FROM candidatos c
+  ORDER BY c.mesmo_fornecedor DESC, c.issued_at DESC, c.order_number DESC
+  LIMIT 1;
+$$;
+
 -- Função atômica para número do pedido
 CREATE OR REPLACE FUNCTION public.next_order_number_tecar()
 RETURNS INT LANGUAGE plpgsql SECURITY DEFINER AS $$
@@ -626,6 +794,8 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 DO $$ BEGIN
   CREATE POLICY "profiles_update" ON public.profiles_tecar FOR UPDATE USING (auth.uid() = id);
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+REVOKE UPDATE ON public.profiles_tecar FROM authenticated;
+GRANT UPDATE (name, email) ON public.profiles_tecar TO authenticated;
 
 DROP POLICY IF EXISTS "suppliers_all" ON public.suppliers_tecar;
 DROP POLICY IF EXISTS "suppliers_select_insert_update" ON public.suppliers_tecar;
@@ -697,25 +867,44 @@ GRANT EXECUTE ON FUNCTION public.buscar_fornecedores_tecar(TEXT, INT, INT)
 GRANT EXECUTE ON FUNCTION public.normalizar_texto_tecar(TEXT)
   TO authenticated;
 
--- Pedidos: leitura para todos autenticados; edição/exclusão pelo criador ou admin
-DO $$ BEGIN
-  CREATE POLICY "orders_select" ON public.purchase_orders_tecar FOR SELECT USING (auth.role() = 'authenticated');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  CREATE POLICY "orders_insert" ON public.purchase_orders_tecar FOR INSERT WITH CHECK (auth.role() = 'authenticated');
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  CREATE POLICY "orders_update" ON public.purchase_orders_tecar FOR UPDATE USING (
-    auth.uid() = created_by OR
-    EXISTS (SELECT 1 FROM public.profiles_tecar WHERE id = auth.uid() AND is_admin = true)
+-- Pedidos: exclusão definitiva não é concedida diretamente; passa apenas pela RPC.
+DROP POLICY IF EXISTS "orders_select" ON public.purchase_orders_tecar;
+DROP POLICY IF EXISTS "orders_insert" ON public.purchase_orders_tecar;
+DROP POLICY IF EXISTS "orders_update" ON public.purchase_orders_tecar;
+DROP POLICY IF EXISTS "orders_delete" ON public.purchase_orders_tecar;
+CREATE POLICY "orders_select" ON public.purchase_orders_tecar FOR SELECT
+  USING (
+    auth.role() = 'authenticated'
+    AND (
+      excluido_em IS NULL
+      OR excluido_por = auth.uid()::TEXT
+      OR EXISTS (
+        SELECT 1 FROM public.profiles_tecar
+        WHERE id = auth.uid() AND is_admin = true
+      )
+    )
   );
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
-DO $$ BEGIN
-  CREATE POLICY "orders_delete" ON public.purchase_orders_tecar FOR DELETE USING (
-    auth.uid() = created_by OR
-    EXISTS (SELECT 1 FROM public.profiles_tecar WHERE id = auth.uid() AND is_admin = true)
+CREATE POLICY "orders_insert" ON public.purchase_orders_tecar FOR INSERT
+  WITH CHECK (auth.role() = 'authenticated');
+CREATE POLICY "orders_update" ON public.purchase_orders_tecar FOR UPDATE USING (
+    excluido_em IS NULL
+    AND (
+      auth.uid() = created_by OR
+      EXISTS (SELECT 1 FROM public.profiles_tecar WHERE id = auth.uid() AND is_admin = true)
+    )
+  ) WITH CHECK (
+    excluido_em IS NULL
+    AND (
+      auth.uid() = created_by OR
+      EXISTS (SELECT 1 FROM public.profiles_tecar WHERE id = auth.uid() AND is_admin = true)
+    )
   );
-EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+REVOKE DELETE ON public.purchase_orders_tecar FROM authenticated;
+REVOKE UPDATE ON public.purchase_orders_tecar FROM authenticated;
+GRANT UPDATE (
+  supplier_id, supplier_name, supplier_cnpj, items, total, notes, updated_at,
+  nota_numero, nota_conferida, nota_conferida_por, nota_conferida_em
+) ON public.purchase_orders_tecar TO authenticated;
 
 DO $$ BEGIN
   CREATE POLICY "standalone_notes_select" ON public.notas_fiscais_avulsas_tecar
@@ -742,6 +931,21 @@ GRANT EXECUTE ON FUNCTION public.criar_nota_avulsa_tecar(TEXT, UUID, NUMERIC)
 GRANT EXECUTE ON FUNCTION public.listar_notas_unificadas_tecar(TEXT, TEXT, INT, INT)
   TO authenticated;
 GRANT EXECUTE ON FUNCTION public.conferir_nota_avulsa_tecar(UUID, BOOLEAN)
+  TO authenticated;
+REVOKE ALL ON FUNCTION public.usuario_admin_tecar() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.mover_pedido_lixeira_tecar(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.restaurar_pedido_lixeira_tecar(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.excluir_pedido_definitivamente_tecar(UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.listar_lixeira_tecar(INT, INT) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.contar_lixeira_tecar() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.buscar_ultimo_preco_tecar(TEXT, UUID, TEXT, UUID) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.usuario_admin_tecar() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.mover_pedido_lixeira_tecar(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.restaurar_pedido_lixeira_tecar(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.excluir_pedido_definitivamente_tecar(UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.listar_lixeira_tecar(INT, INT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.contar_lixeira_tecar() TO authenticated;
+GRANT EXECUTE ON FUNCTION public.buscar_ultimo_preco_tecar(TEXT, UUID, TEXT, UUID)
   TO authenticated;
 
 DROP POLICY IF EXISTS "drafts_own" ON public.order_drafts_tecar;

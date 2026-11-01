@@ -3,6 +3,7 @@ import { useAuth } from "../contexts/AuthContext";
 import { ordersApi } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
 import { printOrderPDF, reserveMobilePrintWindow } from "../lib/pdf";
+import PageHeader from "./PageHeader";
 
 const PAGE_SIZE = 10;
 
@@ -19,7 +20,9 @@ interface Order {
 interface Props {
   onView: (id: string) => void;
   onEdit: (id: string) => void;
+  onDuplicate: (id: string) => void;
   onNew: () => void;
+  onTrash: () => void;
   refresh: number;
 }
 
@@ -40,7 +43,7 @@ const getVisiblePages = (current: number, total: number) => {
   ];
 };
 
-export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) {
+export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTrash, refresh }: Props) {
   const { profile } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
@@ -54,6 +57,8 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
   const [page, setPage] = useState(1);
   const [totalOrders, setTotalOrders] = useState(0);
   const [printingId, setPrintingId] = useState<string | null>(null);
+  const [trashCount, setTrashCount] = useState(0);
+  const [undo, setUndo] = useState<{ id: string; number: number } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -81,17 +86,47 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
     }
   }, [filterSupplier, filterNumber, filterDateFrom, filterDateTo, page]);
 
-  useEffect(() => { load(); }, [load, refresh]);
+  useEffect(() => {
+    void load();
+    void ordersApi.trashCount().then(setTrashCount).catch(() => setTrashCount(0));
+  }, [load, refresh]);
+  useEffect(() => {
+    if (!undo) return;
+    const timer = window.setTimeout(() => setUndo(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [undo]);
+  useEffect(() => {
+    const shortcuts = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.matches("input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "/") {
+        event.preventDefault();
+        document.querySelector<HTMLInputElement>("[data-page-search]")?.focus();
+      } else if (event.key.toLowerCase() === "n" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        event.preventDefault();
+        onNew();
+      } else if (event.key === "Escape") {
+        setConfirmDelete(null);
+        setUndo(null);
+      }
+    };
+    window.addEventListener("keydown", shortcuts);
+    return () => window.removeEventListener("keydown", shortcuts);
+  }, [onNew]);
 
   const handleDelete = async (id: string) => {
     setDeleting(id);
     try {
-      await ordersApi.delete(id);
+      const order = orders.find((item) => item.id === id);
+      await ordersApi.moveToTrash(id);
       const nextTotal = Math.max(0, totalOrders - 1);
       const lastPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
       setTotalOrders(nextTotal);
       if (page > lastPage) setPage(lastPage);
       else await load();
+      setTrashCount((value) => value + 1);
+      if (order) setUndo({ id, number: order.order_number });
+      window.dispatchEvent(new Event("tecar:notes-changed"));
     } catch (err: any) {
       alert(err?.message || "Erro ao excluir pedido.");
     }
@@ -125,21 +160,28 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-xl font-bold text-slate-900">Histórico de Pedidos</h1>
-          <p className="text-slate-500 text-sm mt-0.5">Todos os pedidos de compra da empresa</p>
-        </div>
-        <button
-          onClick={onNew}
-          className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl px-5 py-2.5 text-sm transition cursor-pointer shadow-sm"
-        >
+      <PageHeader
+        title="Histórico de Pedidos"
+        subtitle="Todos os pedidos de compra da empresa"
+        actions={
+          <>
+          <button type="button" onClick={onTrash} className="flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-sm hover:bg-slate-50">
+            Lixeira
+            {trashCount > 0 && <span className="min-w-5 rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold text-slate-700">{trashCount}</span>}
+          </button>
+          <button
+            onClick={onNew}
+            title="Novo pedido (N)"
+            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl px-5 py-2.5 text-sm transition cursor-pointer shadow-sm"
+          >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
           </svg>
           Novo Pedido
-        </button>
-      </div>
+          </button>
+          </>
+        }
+      />
 
       {/* Filters */}
       <div className="bg-white border border-slate-200 rounded-2xl p-4 mb-5 shadow-sm">
@@ -147,6 +189,7 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
           <div>
             <label className="text-xs font-medium text-[var(--color-black)] mb-1 block">Fornecedor</label>
             <input
+              data-page-search
               value={filterSupplier}
               onChange={(e) => { setFilterSupplier(e.target.value); setPage(1); }}
               placeholder="Filtrar por fornecedor..."
@@ -228,7 +271,7 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
         ) : (
           <table className="orders-table w-full">
             <thead>
-              <tr className="bg-slate-900 text-slate-300 text-xs">
+              <tr className="table-header text-slate-300 text-xs">
                 <th className="px-4 py-3 text-left font-medium w-16">Nº</th>
                 <th className="px-4 py-3 text-left font-medium">Fornecedor</th>
                 <th className="px-4 py-3 text-left font-medium">Data</th>
@@ -248,7 +291,9 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
                   <td className="px-4 py-3 text-slate-800 font-medium">{order.supplier_name}</td>
                   <td className="px-4 py-3 text-slate-600">{formatDate(order.issued_at)}</td>
                   <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">{formatCurrency(order.total)}</td>
-                  <td className="px-4 py-3 text-slate-500">{order.created_by_name}</td>
+                  <td className="px-4 py-3 text-slate-500">
+                    {order.created_by_name || "Não identificado"}
+                  </td>
                   <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-2">
                       <button
@@ -267,6 +312,11 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
                           </svg>
                         )}
                       </button>
+                      <button onClick={() => onDuplicate(order.id)} className="text-slate-400 hover:text-blue-600 cursor-pointer transition" title="Duplicar pedido">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 8h10a2 2 0 0 1 2 2v10H10a2 2 0 0 1-2-2V8Zm0 8H4V4h12v4" />
+                        </svg>
+                      </button>
                       {canEdit(order) && (
                         <>
                         <button onClick={() => onEdit(order.id)} className="text-slate-400 hover:text-blue-600 cursor-pointer transition" title="Editar">
@@ -274,7 +324,7 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                           </svg>
                         </button>
-                        <button onClick={() => setConfirmDelete(order.id)} className="text-slate-400 hover:text-red-500 cursor-pointer transition" title="Excluir">
+                        <button onClick={() => setConfirmDelete(order.id)} className="text-slate-400 hover:text-red-500 cursor-pointer transition" title="Mover para a lixeira">
                           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                           </svg>
@@ -342,8 +392,10 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
       {confirmDelete && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
           <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full">
-            <h3 className="font-semibold text-slate-800 mb-2">Excluir pedido?</h3>
-            <p className="text-slate-500 text-sm mb-5">Esta ação não pode ser desfeita.</p>
+            <h3 className="font-semibold text-slate-800 mb-2">Mover pedido para a lixeira?</h3>
+            <p className="text-slate-500 text-sm mb-5">
+              Mover o pedido #{orders.find((order) => order.id === confirmDelete)?.order_number} para a lixeira? Você poderá restaurá-lo depois.
+            </p>
             <div className="flex gap-3">
               <button onClick={() => setConfirmDelete(null)} className="flex-1 border border-slate-200 rounded-xl py-2.5 text-sm font-medium text-slate-600 hover:bg-slate-50 cursor-pointer transition">
                 Cancelar
@@ -353,10 +405,28 @@ export default function OrderHistory({ onView, onEdit, onNew, refresh }: Props) 
                 disabled={!!deleting}
                 className="flex-1 bg-red-600 hover:bg-red-700 disabled:bg-red-300 text-white font-semibold rounded-xl py-2.5 text-sm cursor-pointer transition"
               >
-                {deleting ? "Excluindo..." : "Excluir"}
+                {deleting ? "Movendo..." : "Mover"}
               </button>
             </div>
           </div>
+        </div>
+      )}
+      {undo && (
+        <div className="fixed bottom-5 right-5 z-[90] rounded-xl border border-blue-200 bg-white px-4 py-3 text-sm text-slate-700 shadow-xl">
+          Pedido movido para a lixeira ·{" "}
+          <button
+            type="button"
+            className="font-semibold text-blue-600 hover:underline"
+            onClick={async () => {
+              await ordersApi.restore(undo.id);
+              setUndo(null);
+              setTrashCount((value) => Math.max(0, value - 1));
+              window.dispatchEvent(new Event("tecar:notes-changed"));
+              await load();
+            }}
+          >
+            Desfazer
+          </button>
         </div>
       )}
     </div>

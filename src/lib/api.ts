@@ -18,6 +18,16 @@ const uid = async () => {
 // ── Profile ───────────────────────────────────────────────────────────────────
 
 export const profileApi = {
+  getById: async (id: string) => {
+    const { data, error } = await supabase
+      .from("profiles_tecar")
+      .select("id,name,email,is_admin")
+      .eq("id", id)
+      .maybeSingle();
+    if (error) return null;
+    return data;
+  },
+
   upsert: async (name: string, email: string) => {
     const id = await uid();
     if (!id) return null;
@@ -576,6 +586,7 @@ export const notesApi = {
       .from("purchase_orders_tecar")
       .select("id,order_number")
       .ilike("nota_numero", trimmed)
+      .is("excluido_em", null)
       .limit(1);
     if (supplier.id) query = query.eq("supplier_id", supplier.id);
     else query = query.eq("supplier_cnpj", supplier.cnpj);
@@ -587,6 +598,37 @@ export const notesApi = {
 };
 
 // ── Orders ────────────────────────────────────────────────────────────────────
+
+const withCreatorNames = async <T extends {
+  created_by?: string | null;
+  created_by_name?: string | null;
+}>(orders: T[]) => {
+  const missingIds = [...new Set(
+    orders
+      .filter((order) => !order.created_by_name?.trim() && order.created_by)
+      .map((order) => order.created_by as string),
+  )];
+  let profiles = new Map<string, string>();
+  if (missingIds.length) {
+    const { data } = await supabase
+      .from("profiles_tecar")
+      .select("id,name,email")
+      .in("id", missingIds);
+    profiles = new Map(
+      (data ?? []).map((profile) => [
+        profile.id,
+        String(profile.name || "").trim() || String(profile.email || "").trim(),
+      ]),
+    );
+  }
+  return orders.map((order) => ({
+    ...order,
+    created_by_name:
+      order.created_by_name?.trim() ||
+      (order.created_by ? profiles.get(order.created_by) : "") ||
+      "Não identificado",
+  }));
+};
 
 export const ordersApi = {
   list: async (params?: {
@@ -606,6 +648,7 @@ export const ordersApi = {
         "id,order_number,supplier_name,supplier_cnpj,created_by,created_by_name,issued_at,total,notes,created_at",
         { count: "exact" },
       )
+      .is("excluido_em", null)
       .order("order_number", { ascending: false });
 
     if (params?.supplier) query = query.ilike("supplier_name", `%${params.supplier}%`);
@@ -615,7 +658,7 @@ export const ordersApi = {
 
     const { data, error, count } = await query.range(offset, offset + pageSize - 1);
     if (error) throw error;
-    return { orders: data ?? [], total: count ?? 0 };
+    return { orders: await withCreatorNames(data ?? []), total: count ?? 0 };
   },
 
   get: async (id: string) => {
@@ -623,9 +666,10 @@ export const ordersApi = {
       .from("purchase_orders_tecar")
       .select("*")
       .eq("id", id)
+      .is("excluido_em", null)
       .single();
     if (error) throw error;
-    return data;
+    return (await withCreatorNames([data]))[0];
   },
 
   create: async (payload: {
@@ -636,7 +680,6 @@ export const ordersApi = {
     total: number;
     notes?: string;
     nota_numero?: string;
-    created_by_name: string;
   }) => {
     if (!payload.nota_numero?.trim()) {
       throw new Error("Informe o número da nota");
@@ -645,7 +688,16 @@ export const ordersApi = {
     const { data: numData, error: numError } = await supabase.rpc("next_order_number_tecar");
     if (numError) throw new Error("Falha ao gerar número do pedido: " + numError.message);
 
-    const { data: user } = await supabase.auth.getUser();
+    const { data: userData, error: userError } = await supabase.auth.getUser();
+    const user = userData.user;
+    if (userError || !user) throw new Error("Usuário autenticado não identificado.");
+    const creatorProfile = await profileApi.getById(user.id);
+    const creatorName =
+      String(creatorProfile?.name || "").trim() ||
+      String(creatorProfile?.email || "").trim() ||
+      user.email ||
+      "";
+    if (!creatorName) throw new Error("Não foi possível identificar o criador do pedido.");
     const { data, error } = await supabase
       .from("purchase_orders_tecar")
       .insert({
@@ -653,8 +705,8 @@ export const ordersApi = {
         supplier_id: payload.supplier_id || null,
         supplier_name: payload.supplier_name,
         supplier_cnpj: payload.supplier_cnpj,
-        created_by: user?.user?.id,
-        created_by_name: payload.created_by_name,
+        created_by: user.id,
+        created_by_name: creatorName,
         issued_at: new Date().toISOString(),
         items: payload.items,
         total: payload.total,
@@ -692,6 +744,7 @@ export const ordersApi = {
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
+      .is("excluido_em", null)
       .select()
       .single();
     if (error) throw error;
@@ -700,15 +753,50 @@ export const ordersApi = {
     return { ...data, ...note };
   },
 
-  delete: async (id: string) => {
-    const { error } = await supabase.from("purchase_orders_tecar").delete().eq("id", id);
+  moveToTrash: async (id: string) => {
+    const { error } = await supabase.rpc("mover_pedido_lixeira_tecar", {
+      p_pedido_id: id,
+    });
     if (error) throw error;
+  },
+
+  restore: async (id: string) => {
+    const { error } = await supabase.rpc("restaurar_pedido_lixeira_tecar", {
+      p_pedido_id: id,
+    });
+    if (error) throw error;
+  },
+
+  permanentlyDelete: async (id: string) => {
+    const { error } = await supabase.rpc("excluir_pedido_definitivamente_tecar", {
+      p_pedido_id: id,
+    });
+    if (error) throw error;
+  },
+
+  trash: async (page = 1, pageSize = 10) => {
+    const { data, error } = await supabase.rpc("listar_lixeira_tecar", {
+      p_limite: pageSize,
+      p_deslocamento: (Math.max(1, page) - 1) * pageSize,
+    });
+    if (error) throw error;
+    const rows = (data ?? []) as Array<Record<string, any> & { total_count: number | string }>;
+    return {
+      orders: rows.map(({ total_count: _totalCount, ...order }) => order),
+      total: rows.length ? Number(rows[0].total_count) : 0,
+    };
+  },
+
+  trashCount: async () => {
+    const { data, error } = await supabase.rpc("contar_lixeira_tecar");
+    if (error) throw error;
+    return Number(data ?? 0);
   },
 
   // Check if tables exist
   checkSetup: async (): Promise<boolean> => {
-    const [orders, items, stock, imports, drafts, suppliers, normalization, notes] = await Promise.all([
-      supabase.from("purchase_orders_tecar").select("id,nota_numero,nota_conferida,nota_conferida_por,nota_conferida_em").limit(1),
+    const [orders, items, stock, imports, drafts, suppliers, normalization, notes, trash] = await Promise.all([
+      supabase.from("purchase_orders_tecar").select("id,nota_numero,nota_conferida,nota_conferida_por,nota_conferida_em,excluido_em,excluido_por").limit(1),
       supabase.from("itens").select("codigo").limit(1),
       supabase.from("estoque").select("codigo").limit(1),
       supabase.from("estoque_importacoes").select("id").limit(1),
@@ -721,9 +809,10 @@ export const ordersApi = {
         p_limite: 1,
         p_deslocamento: 0,
       }),
+      supabase.rpc("contar_lixeira_tecar"),
     ]);
     return !orders.error && !items.error && !stock.error && !imports.error &&
-      !drafts.error && !suppliers.error && !normalization.error && !notes.error &&
+      !drafts.error && !suppliers.error && !normalization.error && !notes.error && !trash.error &&
       normalization.data === "acao";
   },
 };

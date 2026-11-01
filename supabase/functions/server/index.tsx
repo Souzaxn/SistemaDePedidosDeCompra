@@ -13,6 +13,16 @@ const adminClient = () =>
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
 
+const userClient = (authHeader: string) =>
+  createClient(
+    Deno.env.get("SUPABASE_URL")!,
+    Deno.env.get("SUPABASE_ANON_KEY")!,
+    {
+      auth: { autoRefreshToken: false, persistSession: false },
+      global: { headers: { Authorization: authHeader } },
+    },
+  );
+
 app.use("*", logger(console.log));
 app.use(
   "/*",
@@ -313,9 +323,16 @@ app.post(`${P}/setup`, async (c) => {
         items JSONB NOT NULL DEFAULT '[]',
         total NUMERIC(14,2) NOT NULL DEFAULT 0,
         notes TEXT DEFAULT '',
+        excluido_em TIMESTAMPTZ,
+        excluido_por TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
       )
+    `;
+    await sql`
+      ALTER TABLE purchase_orders_tecar
+      ADD COLUMN IF NOT EXISTS excluido_em TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS excluido_por TEXT
     `;
     await sql`
       CREATE INDEX IF NOT EXISTS purchase_orders_tecar_order_number_idx
@@ -328,6 +345,10 @@ app.post(`${P}/setup`, async (c) => {
     await sql`
       CREATE INDEX IF NOT EXISTS purchase_orders_tecar_created_by_name_idx
       ON purchase_orders_tecar (created_by_name)
+    `;
+    await sql`
+      CREATE INDEX IF NOT EXISTS purchase_orders_tecar_excluido_em_idx
+      ON purchase_orders_tecar (excluido_em)
     `;
 
     await sql.end();
@@ -445,6 +466,7 @@ app.get(`${P}/orders`, async (c) => {
   let query = supabase
     .from("purchase_orders_tecar")
     .select("id,order_number,supplier_name,supplier_cnpj,created_by,created_by_name,issued_at,total,notes,created_at")
+    .is("excluido_em", null)
     .order("order_number", { ascending: false });
 
   const supplier = c.req.query("supplier");
@@ -469,6 +491,7 @@ app.get(`${P}/orders/:id`, async (c) => {
     .from("purchase_orders_tecar")
     .select("*")
     .eq("id", c.req.param("id"))
+    .is("excluido_em", null)
     .single();
   if (dbError) return c.json({ error: dbError.message }, 404);
   return c.json({ order: data });
@@ -482,6 +505,12 @@ app.post(`${P}/orders`, async (c) => {
   if (!dbUrl) return c.json({ error: "SUPABASE_DB_URL not set" }, 500);
 
   const body = await c.req.json();
+  const creatorName =
+    profile.name?.trim() ||
+    profile.email?.trim() ||
+    user.email ||
+    "";
+  if (!creatorName) return c.json({ error: "Não foi possível identificar o criador do pedido." }, 400);
   let orderNumber: number;
 
   try {
@@ -504,7 +533,7 @@ app.post(`${P}/orders`, async (c) => {
       supplier_name: body.supplier_name,
       supplier_cnpj: body.supplier_cnpj,
       created_by: user.id,
-      created_by_name: profile.name,
+      created_by_name: creatorName,
       issued_at: new Date().toISOString(),
       items: body.items,
       total: body.total,
@@ -526,6 +555,7 @@ app.put(`${P}/orders/:id`, async (c) => {
     .from("purchase_orders_tecar")
     .select("created_by")
     .eq("id", c.req.param("id"))
+    .is("excluido_em", null)
     .single();
 
   if (!existing) return c.json({ error: "Order not found" }, 404);
@@ -546,6 +576,7 @@ app.put(`${P}/orders/:id`, async (c) => {
       updated_at: new Date().toISOString(),
     })
     .eq("id", c.req.param("id"))
+    .is("excluido_em", null)
     .select()
     .single();
 
@@ -554,25 +585,13 @@ app.put(`${P}/orders/:id`, async (c) => {
 });
 
 app.delete(`${P}/orders/:id`, async (c) => {
-  const { user, profile, error } = await requireAuth(c.req.header("Authorization"));
-  if (error || !user || !profile) return c.json({ error }, 401);
-
-  const supabase = adminClient();
-  const { data: existing } = await supabase
-    .from("purchase_orders_tecar")
-    .select("created_by")
-    .eq("id", c.req.param("id"))
-    .single();
-
-  if (!existing) return c.json({ error: "Order not found" }, 404);
-  if (existing.created_by !== user.id && !profile.is_admin) {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
-  const { error: dbError } = await supabase
-    .from("purchase_orders_tecar")
-    .delete()
-    .eq("id", c.req.param("id"));
+  const authHeader = c.req.header("Authorization");
+  const { error } = await requireAuth(authHeader);
+  if (error || !authHeader) return c.json({ error }, 401);
+  const { error: dbError } = await userClient(authHeader).rpc(
+    "mover_pedido_lixeira_tecar",
+    { p_pedido_id: c.req.param("id") },
+  );
 
   if (dbError) return c.json({ error: dbError.message }, 400);
   return c.json({ success: true });

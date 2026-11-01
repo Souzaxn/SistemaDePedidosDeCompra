@@ -23,6 +23,7 @@ export interface OrderData {
   items: OrderItem[];
   total: number;
   notes?: string;
+  nota_numero?: string | null;
   created_by_name: string;
 }
 
@@ -49,8 +50,20 @@ const drawContinuationHeader = (doc: jsPDF, orderNumber: number) => {
   doc.line(MARGIN, 38, doc.internal.pageSize.getWidth() - MARGIN, 38);
 };
 
+const truncateWithEllipsis = (doc: jsPDF, text: string, maxWidth: number) => {
+  let truncated = text.trim();
+  while (truncated && doc.getTextWidth(`${truncated}...`) > maxWidth) {
+    truncated = truncated.slice(0, -1).trimEnd();
+  }
+  return truncated ? `${truncated}...` : "...";
+};
+
 const drawFirstPageHeader = (doc: jsPDF, order: OrderData) => {
   const pageWidth = doc.internal.pageSize.getWidth();
+  const leftValueX = MARGIN + 100;
+  const rightLabelX = pageWidth - MARGIN - 215;
+  const rightValueX = rightLabelX + 78;
+  const supplierMaxWidth = rightLabelX - leftValueX - 12;
 
   doc.setTextColor(0, 0, 0);
   doc.setFont("helvetica", "bold");
@@ -76,24 +89,54 @@ const drawFirstPageHeader = (doc: jsPDF, order: OrderData) => {
   doc.setLineWidth(0.3);
   doc.line(MARGIN, 130, pageWidth - MARGIN, 130);
 
-  doc.setFontSize(8);
+  doc.setFontSize(8.5);
   doc.text("FORNECEDOR:", MARGIN, 151);
+
   doc.setFont("helvetica", "normal");
-  doc.text(order.supplier_name, 112, 151, { maxWidth: 274 });
+  doc.setFontSize(9);
+  const supplierLines = doc.splitTextToSize(order.supplier_name, supplierMaxWidth) as string[];
+  const visibleSupplierLines = supplierLines.slice(0, 2);
+  if (supplierLines.length > 2) {
+    visibleSupplierLines[1] = truncateWithEllipsis(
+      doc,
+      supplierLines.slice(1).join(" "),
+      supplierMaxWidth,
+    );
+  }
+  doc.text(visibleSupplierLines, leftValueX, 151, { lineHeightFactor: 10.5 / 9 });
 
   doc.setFont("helvetica", "bold");
-  doc.text("CNPJ:", 399, 151);
+  doc.setFontSize(8.5);
+  doc.text("CNPJ:", rightLabelX, 151);
   doc.setFont("helvetica", "normal");
-  doc.text(order.supplier_cnpj, pageWidth - MARGIN, 151, { align: "right" });
+  doc.setFontSize(9);
+  doc.text(order.supplier_cnpj, rightValueX, 151);
+
+  const rowTwoY = 168 + (visibleSupplierLines.length - 1) * 10.5;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(8.5);
+  doc.text("DATA DE EMISSÃO:", MARGIN, rowTwoY);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.text(formatDate(order.issued_at), leftValueX, rowTwoY);
 
   doc.setFont("helvetica", "bold");
-  doc.text("DATA DE EMISSÃO:", MARGIN, 168);
+  doc.setFontSize(8.5);
+  doc.text("Nº DA NOTA:", rightLabelX, rowTwoY);
   doc.setFont("helvetica", "normal");
-  doc.text(formatDate(order.issued_at), 119, 168);
+  doc.setFontSize(9);
+  const invoiceNumber = order.nota_numero?.trim() || "-";
+  doc.text(
+    invoiceNumber.length > 20 ? `${invoiceNumber.slice(0, 20)}...` : invoiceNumber,
+    rightValueX,
+    rowTwoY,
+  );
 
+  const separatorY = 179 + (visibleSupplierLines.length - 1) * 10.5;
   doc.setDrawColor(0, 0, 0);
   doc.setLineWidth(0.3);
-  doc.line(MARGIN, 179, pageWidth - MARGIN, 179);
+  doc.line(MARGIN, separatorY, pageWidth - MARGIN, separatorY);
+  return separatorY + 11;
 };
 
 const addNotes = (doc: jsPDF, order: OrderData, startY: number) => {
@@ -171,7 +214,7 @@ export const createOrderPDF = (order: OrderData) => {
   const totalQuantity = order.items.reduce((sum, item) => sum + Number(item.qty || 0), 0);
   const summary = `Itens: ${order.items.length} · Quantidade total: ${formatQuantity(totalQuantity)}`;
 
-  drawFirstPageHeader(doc, order);
+  const tableStartY = drawFirstPageHeader(doc, order);
 
   const rows = order.items.map((item) => [
     formatQuantity(item.qty),
@@ -186,7 +229,7 @@ export const createOrderPDF = (order: OrderData) => {
   ]);
 
   autoTable(doc, {
-    startY: 190,
+    startY: tableStartY,
     margin: { top: CONTINUATION_TABLE_Y, right: MARGIN, bottom: 45, left: MARGIN },
     tableWidth,
     head: [["Qtde", "Un", "Código/Desenho", "Descrição", "Vl Unit", "Desc", "Acrés", "IPI", "Total"]],
@@ -276,7 +319,8 @@ export const createOrderPDF = (order: OrderData) => {
     },
   });
 
-  const finalY = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 190;
+  const finalY = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ??
+    tableStartY;
   addNotes(doc, order, finalY);
   addFooters(doc, order, new Date());
   return doc;
