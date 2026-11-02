@@ -1306,6 +1306,69 @@ input[readonly] {
   padding-top: 24px;
 }
 
+/* Secure global error */
+.secure-error-page {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 15%, rgb(79 107 255 / 10%), transparent 28%),
+    linear-gradient(145deg, #f3f6fc, #eaeff9);
+}
+
+.secure-error-card {
+  width: min(100%, 440px);
+  padding: 36px;
+  text-align: center;
+  border: 1px solid #dde3f2;
+  border-radius: 20px;
+  background: #ffffff;
+  box-shadow: 0 18px 50px rgb(30 45 100 / 10%);
+}
+
+.secure-error-logo {
+  display: flex;
+  width: 112px;
+  height: 48px;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 24px;
+  padding: 6px 9px;
+  border-radius: 15px;
+  background: linear-gradient(145deg, #14224a, #263b78);
+}
+
+.secure-error-logo img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.secure-error-card h1 {
+  color: #121a33;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.secure-error-card p {
+  margin-top: 8px;
+  color: #667094;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.secure-error-card button {
+  margin-top: 24px;
+  padding: 11px 18px;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+  border-radius: 11px;
+  background: linear-gradient(135deg, #4f6bff, #5b7cff);
+  box-shadow: 0 7px 18px rgb(79 107 255 / 20%);
+}
+
 @media print {
   .app-sidebar,
   .mobile-menu-button,
@@ -1676,9 +1739,7 @@ input[type="date"] {
   box-shadow: 0 24px 70px rgb(30 45 100 / 13%);
 }
 
-.login-brand .text-white,
-.setup-screen h1.text-white,
-.setup-screen h3.text-white {
+.login-brand .text-white {
   color: #121a33;
 }
 

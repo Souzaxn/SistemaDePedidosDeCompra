@@ -44,7 +44,7 @@ export default function InvoiceNumberEditor({
       onSaved?.(result);
       window.dispatchEvent(new Event("tecar:notes-changed"));
     } catch (caught: any) {
-      setError(caught?.message || "Não foi possível salvar o Nº da Nota.");
+      setError("Não foi possível salvar o Nº da Nota.");
     } finally {
       setSaving(false);
     }

@@ -27,7 +27,7 @@ export default function BackupSettings() {
       setBackups(result.backups);
       setError(result.status?.last_error ? `Último backup falhou: ${result.status.last_error}` : "");
     } catch (caught: any) {
-      setError(caught?.message || "Não foi possível consultar os backups.");
+      setError("Não foi possível consultar os backups.");
     } finally {
       setLoading(false);
     }
@@ -50,7 +50,7 @@ export default function BackupSettings() {
           onClick={async () => {
             setWorking(true);
             try { await backupsApi.create(); await load(); }
-            catch (caught: any) { setError(caught?.message || "Falha ao criar backup."); }
+            catch { setError("Falha ao criar backup."); }
             finally { setWorking(false); }
           }}
           className="shrink-0 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50 cursor-pointer"
@@ -71,7 +71,7 @@ export default function BackupSettings() {
                 type="button"
                 onClick={async () => {
                   try { window.location.href = await backupsApi.download(backup.name); }
-                  catch (caught: any) { setError(caught?.message || "Falha ao baixar backup."); }
+                  catch { setError("Falha ao baixar backup."); }
                 }}
                 className="text-xs font-medium text-blue-600 cursor-pointer"
               >
@@ -84,7 +84,7 @@ export default function BackupSettings() {
                   if (!confirm(`Isso vai substituir os dados atuais pelos do dia ${date}. Deseja continuar?`)) return;
                   setWorking(true);
                   try { await backupsApi.restore(backup.name); await load(); }
-                  catch (caught: any) { setError(caught?.message || "Falha ao restaurar backup."); }
+                  catch { setError("Falha ao restaurar backup."); }
                   finally { setWorking(false); }
                 }}
                 className="text-xs font-medium text-amber-600 cursor-pointer"

@@ -38,7 +38,7 @@ export default function OrderTrash({ onBack }: { onBack: () => void }) {
       setOrders(result.orders as TrashOrder[]);
       setTotal(result.total);
     } catch (caught: any) {
-      setError(caught?.message || "Erro ao carregar a lixeira.");
+      setError("Erro ao carregar a lixeira.");
     } finally {
       setLoading(false);
     }
@@ -106,7 +106,7 @@ export default function OrderTrash({ onBack }: { onBack: () => void }) {
                             window.dispatchEvent(new Event("tecar:notes-changed"));
                             await load();
                           } catch (caught: any) {
-                            setError(caught?.message || "Não foi possível restaurar o pedido.");
+                            setError("Não foi possível restaurar o pedido.");
                           }
                         }}
                         className="text-xs font-semibold text-blue-600 hover:underline"
@@ -156,7 +156,7 @@ export default function OrderTrash({ onBack }: { onBack: () => void }) {
                     setPermanent(null);
                     await load();
                   } catch (caught: any) {
-                    setError(caught?.message || "Não foi possível excluir o pedido.");
+                    setError("Não foi possível excluir o pedido.");
                   }
                 }}
                 className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-semibold text-white"

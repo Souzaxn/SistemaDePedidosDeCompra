@@ -49,7 +49,7 @@ function StandaloneInvoiceModal({
   useEffect(() => {
     numberRef.current?.focus();
     suppliersApi.list().then(setSuppliers).catch((caught) => {
-      setRequestError(caught?.message || "Não foi possível carregar os fornecedores.");
+      setRequestError("Não foi possível carregar os fornecedores.");
     });
   }, []);
   useEffect(() => {
@@ -95,7 +95,7 @@ function StandaloneInvoiceModal({
       window.dispatchEvent(new Event("tecar:notes-changed"));
       onSaved();
     } catch (caught: any) {
-      setRequestError(caught?.message || "Não foi possível cadastrar a nota.");
+      setRequestError("Não foi possível cadastrar a nota.");
       setSaving(false);
     }
   };
@@ -271,7 +271,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
       setNotes(result.notes);
       setTotal(result.total);
     } catch (caught: any) {
-      setError(caught?.message || "Erro ao carregar as notas.");
+      setError("Erro ao carregar as notas.");
     } finally {
       setLoading(false);
     }
@@ -306,7 +306,7 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
       window.dispatchEvent(new Event("tecar:notes-changed"));
       await load();
     } catch (caught: any) {
-      setError(caught?.message || "Não foi possível alterar a conferência.");
+      setError("Não foi possível alterar a conferência.");
       await load();
     }
   };
@@ -518,7 +518,7 @@ export function InvoiceNoteDetails({
         ...result,
         note_type: result.note_type ?? "order",
       }))
-      .catch((caught) => setError(caught?.message || "Nota não encontrada."))
+      .catch(() => setError("Nota não encontrada."))
       .finally(() => setLoading(false));
   }, [orderId]);
 
@@ -532,7 +532,7 @@ export function InvoiceNoteDetails({
       setOrder((current: any) => ({ ...current, ...result }));
       window.dispatchEvent(new Event("tecar:notes-changed"));
     } catch (caught: any) {
-      setError(caught?.message || "Não foi possível alterar a conferência.");
+      setError("Não foi possível alterar a conferência.");
     }
   };
 

@@ -793,26 +793,4 @@ export const ordersApi = {
     return Number(data ?? 0);
   },
 
-  // Check if tables exist
-  checkSetup: async (): Promise<boolean> => {
-    const [orders, items, stock, imports, drafts, suppliers, normalization, notes, trash] = await Promise.all([
-      supabase.from("purchase_orders_tecar").select("id,nota_numero,nota_conferida,nota_conferida_por,nota_conferida_em,excluido_em,excluido_por").limit(1),
-      supabase.from("itens").select("codigo").limit(1),
-      supabase.from("estoque").select("codigo").limit(1),
-      supabase.from("estoque_importacoes").select("id").limit(1),
-      supabase.from("order_drafts_tecar").select("user_id").limit(1),
-      supabase.from("suppliers_tecar").select("phone,email,created_by").limit(1),
-      supabase.rpc("normalizar_texto_tecar", { valor: "Ação" }),
-      supabase.rpc("listar_notas_unificadas_tecar", {
-        p_status: "pending",
-        p_busca: "",
-        p_limite: 1,
-        p_deslocamento: 0,
-      }),
-      supabase.rpc("contar_lixeira_tecar"),
-    ]);
-    return !orders.error && !items.error && !stock.error && !imports.error &&
-      !drafts.error && !suppliers.error && !normalization.error && !notes.error && !trash.error &&
-      normalization.data === "acao";
-  },
 };

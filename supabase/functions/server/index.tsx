@@ -1,6 +1,5 @@
 import { Hono } from "npm:hono";
 import { cors } from "npm:hono/cors";
-import { logger } from "npm:hono/logger";
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 
 const app = new Hono();
@@ -23,7 +22,6 @@ const userClient = (authHeader: string) =>
     },
   );
 
-app.use("*", logger(console.log));
 app.use(
   "/*",
   cors({
@@ -237,159 +235,6 @@ app.post(`${P}/backups/:name/restore`, async (c) => {
     return c.json({ success: true });
   } catch (caught) {
     return c.json({ error: String(caught) }, 500);
-  }
-});
-
-// ── setup ─────────────────────────────────────────────────────────────────────
-
-app.post(`${P}/setup`, async (c) => {
-  const dbUrl = Deno.env.get("SUPABASE_DB_URL");
-  if (!dbUrl) return c.json({ error: "SUPABASE_DB_URL not set" }, 500);
-
-  try {
-    const { default: postgres } = await import("npm:postgres");
-    const sql = postgres(dbUrl, { ssl: "require", max: 1 });
-
-    await sql`CREATE EXTENSION IF NOT EXISTS "uuid-ossp"`;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS profiles_tecar (
-        id UUID PRIMARY KEY,
-        name TEXT NOT NULL DEFAULT '',
-        email TEXT NOT NULL DEFAULT '',
-        is_admin BOOLEAN NOT NULL DEFAULT false,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS suppliers_tecar (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        name TEXT NOT NULL,
-        cnpj TEXT NOT NULL UNIQUE,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS itens (
-        codigo TEXT PRIMARY KEY,
-        descricao TEXT NOT NULL DEFAULT '',
-        valor NUMERIC(14,2) NOT NULL DEFAULT 0
-      )
-    `;
-    await sql`ALTER TABLE itens ENABLE ROW LEVEL SECURITY`;
-    await sql`
-      DO $$ BEGIN
-        CREATE POLICY "itens_select" ON itens FOR SELECT
-          USING (auth.role() = 'authenticated');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
-    `;
-    await sql`
-      DO $$ BEGIN
-        CREATE POLICY "itens_insert" ON itens FOR INSERT
-          WITH CHECK (auth.role() = 'authenticated');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
-    `;
-    await sql`
-      DO $$ BEGIN
-        CREATE POLICY "itens_update" ON itens FOR UPDATE
-          USING (auth.role() = 'authenticated')
-          WITH CHECK (auth.role() = 'authenticated');
-      EXCEPTION WHEN duplicate_object THEN NULL; END $$
-    `;
-    await sql`GRANT SELECT, INSERT, UPDATE ON itens TO authenticated`;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS order_sequence_tecar (
-        id INT PRIMARY KEY DEFAULT 1,
-        last_number INT NOT NULL DEFAULT 0
-      )
-    `;
-
-    await sql`INSERT INTO order_sequence_tecar (id, last_number) VALUES (1, 0) ON CONFLICT DO NOTHING`;
-
-    await sql`
-      CREATE TABLE IF NOT EXISTS purchase_orders_tecar (
-        id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        order_number INT NOT NULL UNIQUE,
-        supplier_id UUID,
-        supplier_name TEXT NOT NULL,
-        supplier_cnpj TEXT NOT NULL,
-        created_by UUID NOT NULL,
-        created_by_name TEXT NOT NULL,
-        issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        items JSONB NOT NULL DEFAULT '[]',
-        total NUMERIC(14,2) NOT NULL DEFAULT 0,
-        notes TEXT DEFAULT '',
-        excluido_em TIMESTAMPTZ,
-        excluido_por TEXT,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-      )
-    `;
-    await sql`
-      ALTER TABLE purchase_orders_tecar
-      ADD COLUMN IF NOT EXISTS excluido_em TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS excluido_por TEXT
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS purchase_orders_tecar_order_number_idx
-      ON purchase_orders_tecar (order_number DESC)
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS purchase_orders_tecar_issued_at_idx
-      ON purchase_orders_tecar (issued_at)
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS purchase_orders_tecar_created_by_name_idx
-      ON purchase_orders_tecar (created_by_name)
-    `;
-    await sql`
-      CREATE INDEX IF NOT EXISTS purchase_orders_tecar_excluido_em_idx
-      ON purchase_orders_tecar (excluido_em)
-    `;
-
-    await sql.end();
-
-    // Create admin user
-    const supabase = adminClient();
-    const ADMIN_EMAIL = "admim@tecar.com.br";
-    const ADMIN_PASSWORD = "Tecar@123";
-
-    const { data: listData } = await supabase.auth.admin.listUsers({ page: 1, perPage: 1000 });
-    const adminExists = listData?.users?.some((u) => u.email === ADMIN_EMAIL);
-
-    if (!adminExists) {
-      const { data: created } = await supabase.auth.admin.createUser({
-        email: ADMIN_EMAIL,
-        password: ADMIN_PASSWORD,
-        email_confirm: true,
-        user_metadata: { full_name: "Admin Tecar" },
-      });
-      if (created?.user) {
-        await supabase.from("profiles_tecar").upsert({
-          id: created.user.id,
-          name: "Admin Tecar",
-          email: ADMIN_EMAIL,
-          is_admin: true,
-        });
-      }
-    } else {
-      const adminUser = listData!.users.find((u) => u.email === ADMIN_EMAIL)!;
-      await supabase.from("profiles_tecar").upsert({
-        id: adminUser.id,
-        name: "Admin Tecar",
-        email: ADMIN_EMAIL,
-        is_admin: true,
-      });
-    }
-
-    return c.json({ success: true });
-  } catch (err) {
-    console.error("Setup error:", err);
-    return c.json({ error: String(err) }, 500);
   }
 });
 

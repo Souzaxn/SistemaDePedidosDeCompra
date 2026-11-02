@@ -10,14 +10,15 @@ import Login from "./components/Login";
 import OrderHistory from "./components/OrderHistory";
 import OrderForm from "./components/OrderForm";
 import OrderView from "./components/OrderView";
-import SetupScreen from "./components/SetupScreen";
 import InventorySettings from "./components/InventorySettings";
 import StockSearch from "./components/StockSearch";
 import Suppliers from "./components/Suppliers";
 import InvoiceNotes, { InvoiceNoteDetails } from "./components/InvoiceNotes";
 import OrderTrash from "./components/OrderTrash";
 import { SidebarToggleProvider } from "./components/PageHeader";
+import SecureErrorBoundary, { SecureErrorScreen } from "./components/SecureErrorBoundary";
 import { notesApi, ordersApi } from "./lib/api";
+import { supabaseConfigured, verifySupabaseConnection } from "./lib/supabase";
 import tecarLogo from "./imports/image-1.png";
 
 const SIDEBAR_STORAGE_KEY = "tecar-sidebar-collapsed";
@@ -53,10 +54,10 @@ function SidebarIcon({ name }: { name: "history" | "new" | "stock" | "suppliers"
 function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { user, profile, loading, signOut } = useAuth();
+  const { user, profile, loading, error: authError, signOut } = useAuth();
   const [screen, setScreen] = useState<Screen>({ name: "history" });
   const [historyRefresh, setHistoryRefresh] = useState(0);
-  const [dbReady, setDbReady] = useState<boolean | null>(null);
+  const [systemStatus, setSystemStatus] = useState<"idle" | "checking" | "ready" | "failed">("idle");
   const [showSettings, setShowSettings] = useState(false);
   const [stockDrawerOpen, setStockDrawerOpen] = useState(false);
   const [compactViewport, setCompactViewport] = useState(() => window.matchMedia("(max-width: 1023px)").matches);
@@ -121,18 +122,26 @@ function Shell() {
   }, [activeNavItem, compactViewport]);
 
   useEffect(() => {
-    if (user) {
-      ordersApi.checkSetup().then(setDbReady);
+    if (!user) {
+      setSystemStatus("idle");
+      return;
     }
+    setSystemStatus("checking");
+    ordersApi.list({ page: 1, pageSize: 1 })
+      .then(() => setSystemStatus("ready"))
+      .catch((caught) => {
+        if (import.meta.env.DEV) console.error("System initialization failed", caught);
+        setSystemStatus("failed");
+      });
   }, [user]);
 
   useEffect(() => {
-    if (!user || !dbReady) return;
+    if (!user || systemStatus !== "ready") return;
     const refresh = () => notesApi.pendingCount().then(setPendingNotes).catch(() => undefined);
     void refresh();
     window.addEventListener("tecar:notes-changed", refresh);
     return () => window.removeEventListener("tecar:notes-changed", refresh);
-  }, [user, dbReady]);
+  }, [user, systemStatus]);
 
   const closeStockDrawer = useCallback(() => {
     setStockDrawerOpen(false);
@@ -243,9 +252,11 @@ function Shell() {
     );
   }
 
+  if (authError) return <SecureErrorScreen />;
+
   if (!user) return <Login />;
 
-  if (dbReady === null) {
+  if (systemStatus === "idle" || systemStatus === "checking") {
     return (
       <div className="app-canvas min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
@@ -256,9 +267,7 @@ function Shell() {
     );
   }
 
-  if (dbReady === false) {
-    return <SetupScreen onRetry={() => ordersApi.checkSetup().then(setDbReady)} />;
-  }
+  if (systemStatus === "failed") return <SecureErrorScreen />;
 
   const goToHistory = () => {
     setScreen({ name: "history" });
@@ -473,11 +482,34 @@ function Shell() {
 }
 
 function RoutedApp() {
+  const [connectionStatus, setConnectionStatus] = useState<"checking" | "ready" | "failed">(
+    supabaseConfigured ? "checking" : "failed",
+  );
+
   useEffect(() => {
     localStorage.removeItem("tecar-theme");
     document.documentElement.removeAttribute("data-theme");
     document.documentElement.style.colorScheme = "light";
   }, []);
+
+  useEffect(() => {
+    if (!supabaseConfigured) return;
+    void verifySupabaseConnection().then((connected) => {
+      setConnectionStatus(connected ? "ready" : "failed");
+    });
+  }, []);
+
+  if (connectionStatus === "failed") return <SecureErrorScreen />;
+  if (connectionStatus === "checking") {
+    return (
+      <div className="app-canvas min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-8 h-8 border-2 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-slate-500 text-sm">Carregando...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <AuthProvider>
@@ -494,5 +526,9 @@ const router = createBrowserRouter([
 ]);
 
 export default function App() {
-  return <RouterProvider router={router} />;
+  return (
+    <SecureErrorBoundary>
+      <RouterProvider router={router} />
+    </SecureErrorBoundary>
+  );
 }

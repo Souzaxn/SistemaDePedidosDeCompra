@@ -54,7 +54,7 @@ export default function OrderView({ orderId, onBack, onEdit, onDuplicate, canEdi
               try {
                 await printOrderPDF(order);
               } catch (error: any) {
-                alert(error?.message || "Não foi possível abrir a impressão.");
+                alert("Não foi possível abrir a impressão.");
               } finally {
                 setPrinting(false);
               }

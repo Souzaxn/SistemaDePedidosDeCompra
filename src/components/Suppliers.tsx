@@ -43,7 +43,7 @@ export default function Suppliers() {
       setSuppliers(result.suppliers as Supplier[]);
       setTotal(result.total);
     } catch (caught: any) {
-      setError(caught?.message || "Erro ao carregar fornecedores.");
+      setError("Erro ao carregar fornecedores.");
     } finally {
       setLoading(false);
     }
@@ -154,7 +154,7 @@ export default function Suppliers() {
                     setDeleting(null);
                     await load();
                   } catch (caught: any) {
-                    alert(caught?.message || "Erro ao excluir fornecedor.");
+                    alert("Erro ao excluir fornecedor.");
                   }
                 }}
                 className="flex-1 rounded-lg bg-red-600 py-2.5 text-sm font-semibold text-white cursor-pointer"

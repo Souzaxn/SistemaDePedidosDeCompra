@@ -762,7 +762,7 @@ BEGIN
     new.id,
     COALESCE(new.raw_user_meta_data->>'full_name', split_part(new.email, '@', 1)),
     new.email,
-    new.email = 'admim@tecar.com.br'
+    false
   )
   ON CONFLICT (id) DO NOTHING;
   RETURN new;
@@ -975,9 +975,5 @@ SELECT cron.schedule(
   $job$
 );
 
--- ====================================================
--- Após rodar o SQL acima:
--- 1. Crie o usuário admin em Authentication > Users:
---    E-mail: admim@tecar.com.br  |  Senha: Tecar@123
--- 2. Volte ao sistema e faça login!
--- ====================================================
+-- Usuários e perfis administrativos devem ser gerenciados manualmente
+-- no Supabase Authentication e na tabela de perfis.

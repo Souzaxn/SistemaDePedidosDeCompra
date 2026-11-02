@@ -15,8 +15,8 @@ interface AuthContextValue {
   session: Session | null;
   profile: Profile | null;
   loading: boolean;
+  error: boolean;
   signIn: (email: string, password: string) => Promise<string | null>;
-  signInGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 }
 
@@ -33,6 +33,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
   const profileRequest = useRef(0);
 
   const fetchProfile = async (u: User) => {
@@ -56,16 +57,22 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session: s } }) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) {
-        fetchProfile(s.user).finally(() => setLoading(false));
-      } else {
-        setProfile(null);
+    supabase.auth.getSession()
+      .then(({ data: { session: s } }) => {
+        setSession(s);
+        setUser(s?.user ?? null);
+        if (s?.user) {
+          fetchProfile(s.user).finally(() => setLoading(false));
+        } else {
+          setProfile(null);
+          setLoading(false);
+        }
+      })
+      .catch((caught) => {
+        if (import.meta.env.DEV) console.error("Authentication initialization failed", caught);
+        setError(true);
         setLoading(false);
-      }
-    });
+      });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
       setSession(s);
@@ -83,16 +90,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, []);
 
   const signIn = async (email: string, password: string): Promise<string | null> => {
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
-    if (error) return error.message;
-    return null;
-  };
-
-  const signInGoogle = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: { redirectTo: window.location.origin },
-    });
+    try {
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      if (signInError) return "E-mail ou senha incorretos";
+      return null;
+    } catch {
+      return "E-mail ou senha incorretos";
+    }
   };
 
   const signOut = async () => {
@@ -103,7 +107,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   return (
-    <AuthContext.Provider value={{ user, session, profile, loading, signIn, signInGoogle, signOut }}>
+    <AuthContext.Provider value={{ user, session, profile, loading, error, signIn, signOut }}>
       {children}
     </AuthContext.Provider>
   );

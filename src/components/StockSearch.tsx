@@ -93,7 +93,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
       setTotal(result.total);
     } catch (caught: any) {
       if (currentRequest !== requestId.current) return;
-      setError(caught?.message || "Erro ao consultar o estoque.");
+      setError("Erro ao consultar o estoque.");
       setItems([]);
       setTotal(0);
     } finally {

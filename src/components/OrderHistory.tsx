@@ -80,7 +80,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
       setOrders(result.orders);
       setTotalOrders(result.total);
     } catch (err: any) {
-      setFetchError(err?.message || "Erro ao carregar pedidos.");
+      setFetchError("Erro ao carregar pedidos.");
     } finally {
       setLoading(false);
     }
@@ -128,7 +128,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
       if (order) setUndo({ id, number: order.order_number });
       window.dispatchEvent(new Event("tecar:notes-changed"));
     } catch (err: any) {
-      alert(err?.message || "Erro ao excluir pedido.");
+      alert("Erro ao excluir pedido.");
     }
     setDeleting(null);
     setConfirmDelete(null);
@@ -143,7 +143,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
       await printOrderPDF(order, reservedWindow);
     } catch (error: any) {
       reservedWindow?.close();
-      alert(error?.message || "Não foi possível abrir a impressão.");
+      alert("Não foi possível abrir a impressão.");
     } finally {
       setPrintingId(null);
     }

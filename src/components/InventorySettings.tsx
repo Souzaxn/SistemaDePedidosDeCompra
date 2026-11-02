@@ -60,7 +60,6 @@ export default function InventorySettings() {
   };
 
   const importFile = async (file: File) => {
-    let currentStage = "backup antes da importação";
     setImporting(true);
     setProgress(2);
     setBatchProgress("Preparando backup");
@@ -71,17 +70,18 @@ export default function InventorySettings() {
       try {
         await backupsApi.create("before-stock-import");
       } catch (backupError) {
-        console.error("Erro completo no backup antes da importação:", backupError);
-        const detail =
-          backupError instanceof Error ? backupError.message : String(backupError);
-        const shouldContinue = await confirmWithoutBackup(detail);
+        if (import.meta.env.DEV) {
+          console.error("Backup before import failed", backupError);
+        }
+        const shouldContinue = await confirmWithoutBackup(
+          "Não foi possível criar o backup automático antes da importação.",
+        );
         if (!shouldContinue) {
           setProgress(0);
           return;
         }
       }
 
-      currentStage = "leitura da planilha";
       setBatchProgress("Lendo a planilha");
       let XLSX: typeof import("xlsx");
       let workbook: import("xlsx").WorkBook;
@@ -170,7 +170,6 @@ export default function InventorySettings() {
       const itemBatchCount = Math.ceil(uniqueItems.size / 250);
       const stockBatchCount = Math.ceil(uniqueStock.size / 250);
       const totalBatchCount = itemBatchCount + stockBatchCount;
-      currentStage = "gravação dos lotes de itens";
       await itemsApi.import(
         [...uniqueItems.values()],
         (batch) => {
@@ -180,7 +179,6 @@ export default function InventorySettings() {
           );
         },
       );
-      currentStage = "gravação dos lotes de estoque";
       const result = await stockApi.import(
         [...uniqueStock.values()],
         profile?.name || "Usuário",
@@ -205,13 +203,10 @@ export default function InventorySettings() {
       setProgress(100);
       setBatchProgress(`Lote ${totalBatchCount} de ${totalBatchCount}`);
     } catch (caught) {
-      console.error("Erro completo na importação de estoque:", caught);
-      const detail = caught instanceof Error ? caught.message : String(caught);
-      setError(
-        detail.includes("Status HTTP:")
-          ? detail
-          : `Falha na etapa de ${currentStage}. Status HTTP: indisponível. Erro retornado: ${detail}`,
-      );
+      if (import.meta.env.DEV) {
+        console.error("Stock import failed", caught);
+      }
+      setError("Não foi possível importar o estoque. Tente novamente.");
       setProgress(0);
       setBatchProgress("");
     } finally {

@@ -323,7 +323,7 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
           return;
         }
       } catch (err: any) {
-        setError(err?.message || "Erro ao verificar o Nº da Nota.");
+        setError("Erro ao verificar o Nº da Nota.");
         return;
       }
     }
@@ -377,7 +377,7 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
         setSaving(false);
       }
     } catch (err: any) {
-      setError(err?.message || "Erro ao salvar pedido.");
+      setError("Erro ao salvar pedido.");
       setSaving(false);
     }
   };
@@ -895,7 +895,7 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
                   try {
                     await printOrderPDF(emittedOrder);
                   } catch (error: any) {
-                    alert(error?.message || "Não foi possível abrir a impressão.");
+                    alert("Não foi possível abrir a impressão.");
                   } finally {
                     setPrinting(false);
                   }

@@ -48,7 +48,7 @@ export default function SupplierModal({ onClose, onSaved, initial }: Props) {
       }
       onSaved(saved);
     } catch (err: any) {
-      setError(err?.message || "Erro ao salvar fornecedor.");
+      setError("Erro ao salvar fornecedor.");
       setSaving(false);
     }
   };
