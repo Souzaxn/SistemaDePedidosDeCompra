@@ -303,6 +303,79 @@ $$;
 CREATE INDEX IF NOT EXISTS purchase_orders_tecar_item_codes_idx
   ON public.purchase_orders_tecar USING gin (public.codigos_pedido_tecar(items));
 
+CREATE OR REPLACE FUNCTION public.buscar_pedidos_por_peca_tecar(
+  p_peca TEXT DEFAULT '',
+  p_fornecedor TEXT DEFAULT '',
+  p_numero INT DEFAULT NULL,
+  p_data_de DATE DEFAULT NULL,
+  p_data_ate DATE DEFAULT NULL,
+  p_limite INT DEFAULT 10,
+  p_deslocamento INT DEFAULT 0
+)
+RETURNS TABLE (
+  id UUID,
+  order_number INT,
+  supplier_name TEXT,
+  created_by UUID,
+  created_by_name TEXT,
+  issued_at TIMESTAMPTZ,
+  total NUMERIC,
+  nota_numero TEXT,
+  matched_items JSONB,
+  total_count BIGINT
+)
+LANGUAGE sql STABLE SECURITY INVOKER
+SET search_path = public
+AS $$
+  WITH filtered AS (
+    SELECT
+      p.id,
+      p.order_number,
+      p.supplier_name,
+      p.created_by,
+      p.created_by_name,
+      p.issued_at,
+      p.total,
+      p.nota_numero,
+      matches.items AS matched_items
+    FROM public.purchase_orders_tecar p
+    CROSS JOIN LATERAL (
+      SELECT COALESCE(jsonb_agg(item), '[]'::JSONB) AS items
+      FROM jsonb_array_elements(COALESCE(p.items, '[]'::JSONB)) item
+      WHERE public.normalizar_texto_tecar(item->>'code')
+              ILIKE '%' || public.normalizar_texto_tecar(COALESCE(p_peca, '')) || '%'
+         OR public.normalizar_texto_tecar(item->>'description')
+              ILIKE '%' || public.normalizar_texto_tecar(COALESCE(p_peca, '')) || '%'
+    ) matches
+    WHERE p.excluido_em IS NULL
+      AND char_length(trim(COALESCE(p_peca, ''))) >= 2
+      AND jsonb_array_length(matches.items) > 0
+      AND (
+        NULLIF(trim(COALESCE(p_fornecedor, '')), '') IS NULL
+        OR public.normalizar_texto_tecar(p.supplier_name)
+          ILIKE '%' || public.normalizar_texto_tecar(p_fornecedor) || '%'
+      )
+      AND (p_numero IS NULL OR p.order_number = p_numero)
+      AND (p_data_de IS NULL OR p.issued_at >= p_data_de)
+      AND (p_data_ate IS NULL OR p.issued_at < p_data_ate + 1)
+  )
+  SELECT
+    f.id,
+    f.order_number,
+    f.supplier_name,
+    f.created_by,
+    f.created_by_name,
+    f.issued_at,
+    f.total,
+    f.nota_numero,
+    f.matched_items,
+    count(*) OVER () AS total_count
+  FROM filtered f
+  ORDER BY f.order_number DESC
+  LIMIT GREATEST(1, LEAST(COALESCE(p_limite, 10), 100))
+  OFFSET GREATEST(COALESCE(p_deslocamento, 0), 0);
+$$;
+
 -- Exige nota em novos pedidos feitos por usuários autenticados e impede apagar
 -- uma nota existente. Pedidos legados sem nota e restaurações continuam válidos.
 CREATE OR REPLACE FUNCTION public.validar_nota_pedido_tecar()
@@ -866,6 +939,12 @@ GRANT EXECUTE ON FUNCTION public.buscar_fornecedores_tecar(TEXT, INT, INT)
   TO authenticated;
 GRANT EXECUTE ON FUNCTION public.normalizar_texto_tecar(TEXT)
   TO authenticated;
+REVOKE ALL ON FUNCTION public.buscar_pedidos_por_peca_tecar(
+  TEXT, TEXT, INT, DATE, DATE, INT, INT
+) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.buscar_pedidos_por_peca_tecar(
+  TEXT, TEXT, INT, DATE, DATE, INT, INT
+) TO authenticated;
 
 -- Pedidos: exclusão definitiva não é concedida diretamente; passa apenas pela RPC.
 DROP POLICY IF EXISTS "orders_select" ON public.purchase_orders_tecar;

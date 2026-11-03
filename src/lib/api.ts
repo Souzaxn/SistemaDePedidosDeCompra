@@ -636,16 +636,39 @@ export const ordersApi = {
     number?: string;
     dateFrom?: string;
     dateTo?: string;
+    part?: string;
     page?: number;
     pageSize?: number;
   }) => {
     const page = Math.max(1, params?.page ?? 1);
     const pageSize = Math.max(1, params?.pageSize ?? 10);
     const offset = (page - 1) * pageSize;
+    const part = params?.part?.trim() ?? "";
+
+    if (part.length >= 2) {
+      const { data, error } = await supabase.rpc("buscar_pedidos_por_peca_tecar", {
+        p_peca: part,
+        p_fornecedor: params?.supplier?.trim() ?? "",
+        p_numero: params?.number ? parseInt(params.number) : null,
+        p_data_de: params?.dateFrom || null,
+        p_data_ate: params?.dateTo || null,
+        p_limite: pageSize,
+        p_deslocamento: offset,
+      });
+      if (error) throw error;
+      const rows = (data ?? []) as Array<Record<string, any> & { total_count: number | string }>;
+      return {
+        orders: await withCreatorNames(
+          rows.map(({ total_count: _totalCount, ...order }) => order),
+        ),
+        total: rows.length ? Number(rows[0].total_count) : 0,
+      };
+    }
+
     let query = supabase
       .from("purchase_orders_tecar")
       .select(
-        "id,order_number,supplier_name,supplier_cnpj,created_by,created_by_name,issued_at,total,notes,created_at",
+        "id,order_number,supplier_name,supplier_cnpj,created_by,created_by_name,issued_at,total,notes,nota_numero,created_at",
         { count: "exact" },
       )
       .is("excluido_em", null)

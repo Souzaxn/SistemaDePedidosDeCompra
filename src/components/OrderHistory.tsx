@@ -15,6 +15,15 @@ interface Order {
   created_by_name: string;
   issued_at: string;
   total: number;
+  nota_numero?: string | null;
+  matched_items?: MatchedItem[];
+}
+
+interface MatchedItem {
+  code?: string;
+  description?: string;
+  qty?: number;
+  unit_price?: number;
 }
 
 interface Props {
@@ -43,6 +52,38 @@ const getVisiblePages = (current: number, total: number) => {
   ];
 };
 
+const normalizeSearchText = (value: string) =>
+  value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("pt-BR");
+
+const highlightMatch = (value: string, query: string) => {
+  if (!value || !query) return value;
+  const normalizedQuery = normalizeSearchText(query);
+  const characters = Array.from(value);
+  let normalizedValue = "";
+  const sourceIndexes: number[] = [];
+
+  characters.forEach((character, sourceIndex) => {
+    const normalizedCharacter = normalizeSearchText(character);
+    normalizedValue += normalizedCharacter;
+    for (let index = 0; index < normalizedCharacter.length; index += 1) {
+      sourceIndexes.push(sourceIndex);
+    }
+  });
+
+  const matchStart = normalizedValue.indexOf(normalizedQuery);
+  if (matchStart < 0) return value;
+  const sourceStart = sourceIndexes[matchStart] ?? 0;
+  const sourceEnd = (sourceIndexes[matchStart + normalizedQuery.length - 1] ?? sourceStart) + 1;
+
+  return (
+    <>
+      {characters.slice(0, sourceStart).join("")}
+      <mark className="piece-highlight">{characters.slice(sourceStart, sourceEnd).join("")}</mark>
+      {characters.slice(sourceEnd).join("")}
+    </>
+  );
+};
+
 export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTrash, refresh }: Props) {
   const { profile } = useAuth();
   const [orders, setOrders] = useState<Order[]>([]);
@@ -51,6 +92,10 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
   const [filterNumber, setFilterNumber] = useState("");
   const [filterDateFrom, setFilterDateFrom] = useState("");
   const [filterDateTo, setFilterDateTo] = useState("");
+  const [partSearch, setPartSearch] = useState("");
+  const [debouncedPart, setDebouncedPart] = useState("");
+  const [partDebouncing, setPartDebouncing] = useState(false);
+  const [expandedMatches, setExpandedMatches] = useState<Set<string>>(new Set());
   const [deleting, setDeleting] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState("");
@@ -69,6 +114,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
         number: filterNumber || undefined,
         dateFrom: filterDateFrom || undefined,
         dateTo: filterDateTo || undefined,
+        part: debouncedPart || undefined,
         page,
         pageSize: PAGE_SIZE,
       });
@@ -78,13 +124,31 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
         return;
       }
       setOrders(result.orders);
+      setExpandedMatches(new Set());
       setTotalOrders(result.total);
     } catch (err: any) {
       setFetchError("Erro ao carregar pedidos.");
     } finally {
       setLoading(false);
     }
-  }, [filterSupplier, filterNumber, filterDateFrom, filterDateTo, page]);
+  }, [filterSupplier, filterNumber, filterDateFrom, filterDateTo, debouncedPart, page]);
+
+  useEffect(() => {
+    const value = partSearch.trim();
+    if (value.length < 2) {
+      setPartDebouncing(false);
+      setDebouncedPart("");
+      setPage(1);
+      return;
+    }
+    setPartDebouncing(true);
+    const timer = window.setTimeout(() => {
+      setDebouncedPart(value);
+      setPartDebouncing(false);
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [partSearch]);
 
   useEffect(() => {
     void load();
@@ -152,6 +216,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
   const rangeStart = totalOrders === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
   const rangeEnd = Math.min(page * PAGE_SIZE, totalOrders);
   const visiblePages = getVisiblePages(page, totalPages);
+  const pieceMode = debouncedPart.length >= 2;
 
   const searchFirstPage = () => {
     if (page === 1) void load();
@@ -225,31 +290,73 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
             />
           </div>
         </div>
-        <div className="flex justify-end mt-3 gap-2">
-          <button
-            onClick={() => {
-              setFilterSupplier("");
-              setFilterNumber("");
-              setFilterDateFrom("");
-              setFilterDateTo("");
-              setPage(1);
-            }}
-            className="text-xs text-[var(--color-black)] hover:text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 cursor-pointer transition"
-          >
-            Limpar
-          </button>
-          <button
-            onClick={searchFirstPage}
-            className="text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-lg px-4 py-1.5 font-medium cursor-pointer transition"
-          >
-            Buscar
-          </button>
+        <div className="mt-3 flex flex-col items-stretch gap-3 md:flex-row md:items-end">
+          <div className="min-w-0 flex-1">
+            <label htmlFor="piece-search" className="mb-1 block text-xs font-medium text-slate-700">
+              Pesquisar peça
+            </label>
+            <div className="piece-search-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" strokeWidth={1.8} />
+                <path d="m16 16 4 4" strokeWidth={1.8} strokeLinecap="round" />
+              </svg>
+              <input
+                id="piece-search"
+                value={partSearch}
+                onChange={(event) => setPartSearch(event.target.value)}
+                placeholder="Digite o código ou a descrição da peça..."
+                className="h-[42px] w-full rounded-xl border border-slate-200 py-0 pl-10 pr-20 text-sm text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              {(partDebouncing || (pieceMode && loading)) && (
+                <span className="piece-search-spinner" aria-label="Pesquisando peça" />
+              )}
+              {partSearch && (
+                <button
+                  type="button"
+                  className="piece-search-clear"
+                  onClick={() => {
+                    setPartSearch("");
+                    setDebouncedPart("");
+                    setPartDebouncing(false);
+                    setPage(1);
+                  }}
+                  aria-label="Limpar pesquisa de peça"
+                  title="Limpar"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="flex w-full gap-2 md:w-auto">
+            <button
+              onClick={() => {
+                setFilterSupplier("");
+                setFilterNumber("");
+                setFilterDateFrom("");
+                setFilterDateTo("");
+                setPartSearch("");
+                setDebouncedPart("");
+                setPartDebouncing(false);
+                setPage(1);
+              }}
+              className="h-[42px] flex-1 text-xs text-[var(--color-black)] hover:text-slate-700 border border-slate-200 rounded-lg px-3 py-1.5 cursor-pointer transition md:flex-none"
+            >
+              Limpar
+            </button>
+            <button
+              onClick={searchFirstPage}
+              className="h-[42px] flex-1 text-xs text-white bg-blue-600 hover:bg-blue-700 rounded-lg px-4 py-1.5 font-medium cursor-pointer transition md:flex-none"
+            >
+              Buscar
+            </button>
+          </div>
         </div>
       </div>
 
       {/* Table */}
-      <div className="relative bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden min-h-[31rem]">
-        {loading && (
+      <div className="relative bg-white border border-slate-200 rounded-2xl shadow-sm overflow-x-auto min-h-[31rem]">
+        {loading && !pieceMode && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 text-slate-500 text-sm gap-2">
             <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
             Carregando...
@@ -263,18 +370,37 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
         ) : orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[31rem] text-slate-400 gap-2">
             <svg className="w-10 h-10 text-slate-200" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              {pieceMode ? (
+                <>
+                  <circle cx="10.5" cy="10.5" r="6.5" strokeWidth={1.5} />
+                  <path d="m15.5 15.5 4 4" strokeWidth={1.5} strokeLinecap="round" />
+                </>
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              )}
             </svg>
-            <p className="text-sm">Nenhum pedido encontrado.</p>
-            <button onClick={onNew} className="text-blue-600 text-xs font-medium cursor-pointer hover:underline">Criar primeiro pedido</button>
+            <p className="text-sm">
+              {pieceMode ? "Nenhum pedido encontrado com essa peça" : "Nenhum pedido encontrado."}
+            </p>
+            {pieceMode ? (
+              <p className="text-xs text-slate-400">Confira o código ou tente outra descrição.</p>
+            ) : (
+              <button onClick={onNew} className="text-blue-600 text-xs font-medium cursor-pointer hover:underline">Criar primeiro pedido</button>
+            )}
           </div>
         ) : (
-          <table className="orders-table w-full">
+          <table className={`orders-table w-full ${pieceMode ? "piece-search-table" : ""}`}>
             <thead>
               <tr className="table-header text-slate-300 text-xs">
                 <th className="px-4 py-3 text-left font-medium w-16">Nº</th>
                 <th className="px-4 py-3 text-left font-medium">Fornecedor</th>
                 <th className="px-4 py-3 text-left font-medium">Data</th>
+                {pieceMode && (
+                  <>
+                    <th className="px-4 py-3 text-left font-medium">Nº da nota</th>
+                    <th className="px-4 py-3 text-left font-medium">Peça encontrada</th>
+                  </>
+                )}
                 <th className="px-4 py-3 text-right font-medium">Total</th>
                 <th className="px-4 py-3 text-left font-medium">Feito por</th>
                 <th className="px-4 py-3 text-center font-medium w-28">Ações</th>
@@ -287,14 +413,59 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
                   className="order-row text-sm border-t transition cursor-pointer"
                   onClick={() => onView(order.id)}
                 >
-                  <td className="px-4 py-3 font-mono font-bold text-blue-700">#{order.order_number}</td>
-                  <td className="px-4 py-3 text-slate-800 font-medium">{order.supplier_name}</td>
-                  <td className="px-4 py-3 text-slate-600">{formatDate(order.issued_at)}</td>
-                  <td className="px-4 py-3 text-right font-mono font-semibold text-slate-900">{formatCurrency(order.total)}</td>
-                  <td className="px-4 py-3 text-slate-500">
+                  <td className="order-number-cell px-4 py-3 font-mono font-bold text-blue-700">#{order.order_number}</td>
+                  <td className="supplier-cell px-4 py-3 text-slate-800 font-medium">{order.supplier_name}</td>
+                  <td className="date-cell px-4 py-3 text-slate-600">{formatDate(order.issued_at)}</td>
+                  {pieceMode && (
+                    <>
+                      <td className="note-cell whitespace-nowrap px-4 py-3 font-mono text-slate-600">
+                        {order.nota_numero ? `Nota ${order.nota_numero}` : "—"}
+                      </td>
+                      <td className="piece-cell px-4 py-3">
+                        <div className="piece-match-list">
+                          {(expandedMatches.has(order.id)
+                            ? order.matched_items ?? []
+                            : (order.matched_items ?? []).slice(0, 1)
+                          ).map((item, itemIndex) => (
+                            <div className="piece-match" key={`${order.id}-${item.code}-${itemIndex}`}>
+                              <div className="piece-match-name">
+                                <span className="font-mono font-semibold text-blue-700">
+                                  {highlightMatch(item.code || "—", debouncedPart)}
+                                </span>
+                                <span className="text-slate-700">
+                                  {highlightMatch(item.description || "Sem descrição", debouncedPart)}
+                                </span>
+                              </div>
+                              <span className="piece-match-meta">
+                                {Number(item.qty || 0)} × {formatCurrency(Number(item.unit_price || 0))}
+                              </span>
+                            </div>
+                          ))}
+                          {!expandedMatches.has(order.id) && (order.matched_items?.length ?? 0) > 1 && (
+                            <button
+                              type="button"
+                              className="piece-more"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setExpandedMatches((current) => {
+                                  const next = new Set(current);
+                                  next.add(order.id);
+                                  return next;
+                                });
+                              }}
+                            >
+                              +{(order.matched_items?.length ?? 1) - 1} peças
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </>
+                  )}
+                  <td className="total-cell px-4 py-3 text-right font-mono font-semibold text-slate-900">{formatCurrency(order.total)}</td>
+                  <td className="creator-cell px-4 py-3 text-slate-500">
                     {order.created_by_name || "Não identificado"}
                   </td>
-                  <td className="px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
+                  <td className="actions-cell px-4 py-3 text-center" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center justify-center gap-2">
                       <button
                         type="button"
@@ -341,7 +512,9 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
       </div>
       <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
         <p className="text-xs text-[var(--color-black)]">
-          Mostrando {rangeStart}–{rangeEnd} de {totalOrders} pedidos
+          {pieceMode
+            ? `${totalOrders} ${totalOrders === 1 ? "pedido encontrado" : "pedidos encontrados"}`
+            : `Mostrando ${rangeStart}–${rangeEnd} de ${totalOrders} pedidos`}
         </p>
         <div className="flex items-center gap-1">
           <button
