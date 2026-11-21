@@ -19,9 +19,13 @@ import { SidebarToggleProvider } from "./components/PageHeader";
 import SecureErrorBoundary, { SecureErrorScreen } from "./components/SecureErrorBoundary";
 import { notesApi, ordersApi } from "./lib/api";
 import { supabaseConfigured, verifySupabaseConnection } from "./lib/supabase";
+import { startTecarRealtime } from "./lib/realtime";
+import { useRealtimeRefresh } from "./hooks/useRealtimeRefresh";
 import tecarLogo from "./imports/image-1.png";
 
 const SIDEBAR_STORAGE_KEY = "tecar-sidebar-collapsed";
+const THEME_STORAGE_KEY = "tecar-theme";
+type Theme = "light" | "dark";
 
 type Screen =
   | { name: "history" }
@@ -51,6 +55,30 @@ function SidebarIcon({ name }: { name: "history" | "new" | "stock" | "suppliers"
   return <svg className="sidebar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>;
 }
 
+function ThemeIcon({ theme }: { theme: Theme }) {
+  return (
+    <svg
+      className="sidebar-icon"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.7"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      {theme === "dark" ? (
+        <>
+          <circle cx="12" cy="12" r="3.5" />
+          <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M18.7 5.3l-1.4 1.4M6.7 17.3l-1.4 1.4" />
+        </>
+      ) : (
+        <path d="M20.5 15.2A8.5 8.5 0 0 1 8.8 3.5 8.5 8.5 0 1 0 20.5 15.2Z" />
+      )}
+    </svg>
+  );
+}
+
 function Shell() {
   const location = useLocation();
   const navigate = useNavigate();
@@ -69,6 +97,9 @@ function Shell() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [notice, setNotice] = useState("");
   const [pendingNotes, setPendingNotes] = useState(0);
+  const [theme, setTheme] = useState<Theme>(() =>
+    document.documentElement.dataset.theme === "dark" ? "dark" : "light"
+  );
   const settingsRef = useRef<HTMLDivElement>(null);
   const stockReturnFocus = useRef<HTMLElement | null>(null);
   const isStockPage = location.pathname === "/estoque";
@@ -104,6 +135,25 @@ function Shell() {
   const notesAriaLabel = pendingNotes === 0
     ? "Nenhuma nota pendente"
     : `${pendingNotes} ${pendingNotes === 1 ? "nota pendente" : "notas pendentes"}`;
+  const themeLabel = theme === "light" ? "Modo escuro" : "Modo claro";
+  const themeTooltip = theme === "light" ? "Ativar modo escuro" : "Ativar modo claro";
+
+  const toggleTheme = useCallback(() => {
+    const next: Theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+    const root = document.documentElement;
+    if (!window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      root.classList.add("theme-transition");
+      window.setTimeout(() => root.classList.remove("theme-transition"), 260);
+    }
+    root.dataset.theme = next;
+    root.style.colorScheme = next;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, next);
+    } catch {
+      // O tema ainda funciona durante a sessão quando o armazenamento está bloqueado.
+    }
+    setTheme(next);
+  }, []);
 
   const navigateFromSidebar = useCallback((
     item: "history" | "new" | "stock" | "suppliers" | "notes",
@@ -133,7 +183,7 @@ function Shell() {
         if (import.meta.env.DEV) console.error("System initialization failed", caught);
         setSystemStatus("failed");
       });
-  }, [user]);
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user || systemStatus !== "ready") return;
@@ -142,6 +192,19 @@ function Shell() {
     window.addEventListener("tecar:notes-changed", refresh);
     return () => window.removeEventListener("tecar:notes-changed", refresh);
   }, [user, systemStatus]);
+
+  useEffect(() => {
+    if (!user || systemStatus !== "ready") return;
+    return startTecarRealtime();
+  }, [user?.id, systemStatus]);
+
+  useRealtimeRefresh(
+    ["purchase_orders_tecar", "notas_fiscais_avulsas_tecar"],
+    () => {
+      if (!user || systemStatus !== "ready") return;
+      void notesApi.pendingCount().then(setPendingNotes).catch(() => undefined);
+    },
+  );
 
   const closeStockDrawer = useCallback(() => {
     setStockDrawerOpen(false);
@@ -375,6 +438,20 @@ function Shell() {
           <button type="button" data-tooltip="Configurações" onMouseDown={(event) => event.stopPropagation()} onClick={() => { setStockDrawerOpen(false); setMobileMenuOpen(false); setShowSettings((current) => !current); }} className={showSettings ? "open" : ""}>
             <SidebarIcon name="settings" /><span className="sidebar-label">Configurações</span>
           </button>
+          <button
+            type="button"
+            className="sidebar-theme-button"
+            data-tooltip={themeTooltip}
+            aria-label={themeTooltip}
+            aria-pressed={theme === "dark"}
+            onClick={toggleTheme}
+          >
+            <ThemeIcon theme={theme} />
+            <span className="sidebar-label">{themeLabel}</span>
+            <span className="sidebar-theme-switch" aria-hidden="true">
+              <span />
+            </span>
+          </button>
         </nav>
         <div className="sidebar-user">
           <span className="sidebar-avatar">{userInitials}</span>
@@ -485,12 +562,6 @@ function RoutedApp() {
   const [connectionStatus, setConnectionStatus] = useState<"checking" | "ready" | "failed">(
     supabaseConfigured ? "checking" : "failed",
   );
-
-  useEffect(() => {
-    localStorage.removeItem("tecar-theme");
-    document.documentElement.removeAttribute("data-theme");
-    document.documentElement.style.colorScheme = "light";
-  }, []);
 
   useEffect(() => {
     if (!supabaseConfigured) return;

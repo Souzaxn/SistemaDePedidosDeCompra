@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, ReactNode } from "react";
-import { User, Session } from "@supabase/supabase-js";
+import { AuthChangeEvent, User, Session } from "@supabase/supabase-js";
 import { supabase } from "../lib/supabase";
 import { profileApi } from "../lib/api";
 
@@ -35,6 +35,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const profileRequest = useRef(0);
+  const currentUserId = useRef<string | null>(null);
 
   const fetchProfile = async (u: User) => {
     const request = ++profileRequest.current;
@@ -57,16 +58,35 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   };
 
   useEffect(() => {
+    const applySession = (s: Session | null, event?: AuthChangeEvent) => {
+      const nextUser = s?.user ?? null;
+      const nextUserId = nextUser?.id ?? null;
+
+      if (!nextUserId) {
+        if (event === "SIGNED_OUT" || currentUserId.current) {
+          currentUserId.current = null;
+          profileRequest.current += 1;
+          setSession(null);
+          setUser(null);
+          setProfile(null);
+        }
+        setLoading(false);
+        return;
+      }
+
+      if (currentUserId.current === nextUserId) {
+        return;
+      }
+
+      currentUserId.current = nextUserId;
+      setSession(s);
+      setUser(nextUser);
+      fetchProfile(nextUser).finally(() => setLoading(false));
+    };
+
     supabase.auth.getSession()
       .then(({ data: { session: s } }) => {
-        setSession(s);
-        setUser(s?.user ?? null);
-        if (s?.user) {
-          fetchProfile(s.user).finally(() => setLoading(false));
-        } else {
-          setProfile(null);
-          setLoading(false);
-        }
+        applySession(s, "INITIAL_SESSION");
       })
       .catch((caught) => {
         if (import.meta.env.DEV) console.error("Authentication initialization failed", caught);
@@ -74,16 +94,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         setLoading(false);
       });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, s) => {
-      setSession(s);
-      setUser(s?.user ?? null);
-      if (s?.user) {
-        setProfile(null);
-        fetchProfile(s.user);
-      } else {
-        profileRequest.current += 1;
-        setProfile(null);
-      }
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, s) => {
+      applySession(s, event);
     });
 
     return () => subscription.unsubscribe();
@@ -101,6 +113,8 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
   const signOut = async () => {
     await supabase.auth.signOut();
+    currentUserId.current = null;
+    profileRequest.current += 1;
     setUser(null);
     setSession(null);
     setProfile(null);

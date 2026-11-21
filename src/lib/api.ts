@@ -7,6 +7,7 @@ import {
   StockItem,
 } from "./items";
 import { validateStandaloneInvoice } from "./invoices";
+import { markLocalRealtimeMutation } from "./realtime";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -199,9 +200,22 @@ export const itemsApi = {
     if (!items.length) return;
     for (let start = 0; start < items.length; start += ITEM_BATCH_SIZE) {
       const batch = items.slice(start, start + ITEM_BATCH_SIZE);
+      const codes = batch.map((item) => item.codigo);
+      const { data: imported, error: importedError } = await supabase
+        .from("estoque")
+        .select("codigo")
+        .in("codigo", codes);
+      if (importedError) throw importedError;
+      const importedCodes = new Set(
+        (imported ?? []).map((item) => item.codigo),
+      );
+      const manualItems = batch
+        .filter((item) => !importedCodes.has(item.codigo))
+        .map((item) => ({ ...item, origem: "manual" }));
+      if (!manualItems.length) continue;
       const { error } = await supabase
         .from("itens")
-        .upsert(batch, { onConflict: "codigo", ignoreDuplicates: true });
+        .upsert(manualItems, { onConflict: "codigo" });
       if (error) throw error;
     }
   },
@@ -228,7 +242,10 @@ export const itemsApi = {
       created += batch.length - existingCodes.size;
 
       await batchRequest(
-        () => supabase.from("itens").upsert(batch, { onConflict: "codigo" }),
+        () =>
+          supabase
+            .from("itens")
+            .upsert(batch, { onConflict: "codigo" }),
         `Falha na gravação do lote ${batchNumber} de ${totalBatches} de itens`,
       );
       onProgress?.(batchNumber, totalBatches);
@@ -248,6 +265,7 @@ export const stockApi = {
   ) => {
     let created = 0;
     let updated = 0;
+    const importBatchId = crypto.randomUUID();
     const totalBatches = Math.ceil(items.length / ITEM_BATCH_SIZE);
 
     for (let start = 0; start < items.length; start += ITEM_BATCH_SIZE) {
@@ -286,13 +304,32 @@ export const stockApi = {
         () =>
           supabase
             .from("estoque")
-            .upsert(batch, { onConflict: "codigo,locacao" }),
+            .upsert(
+              batch.map((item) => ({ ...item, import_batch_id: importBatchId })),
+              { onConflict: "codigo,locacao" },
+            ),
         `Falha na gravação do lote ${batchNumber} de ${totalBatches} do estoque`,
+      );
+      await batchRequest(
+        () =>
+          supabase
+            .from("itens")
+            .update({ origem: "importado" })
+            .in("codigo", codes),
+        `Falha ao consolidar a origem do lote ${batchNumber} de ${totalBatches}`,
       );
       onProgress?.(batchNumber, totalBatches);
     }
 
     if (!items.length) onProgress?.(0, 0);
+    await batchRequest(
+      () =>
+        supabase
+          .from("estoque")
+          .delete()
+          .neq("import_batch_id", importBatchId),
+      "Falha ao remover itens antigos do estoque importado",
+    );
 
     const importedBy = await uid();
     if (!importedBy) throw new Error("Usuário não autenticado.");
@@ -311,7 +348,10 @@ export const stockApi = {
     );
 
     const { count } = await batchRequest(
-      () => supabase.from("estoque").select("codigo", { count: "exact", head: true }),
+      () =>
+        supabase
+          .from("estoque_consulta_tecar")
+          .select("codigo", { count: "exact", head: true }),
       "Falha ao contar o estoque após a importação",
     );
 
@@ -338,7 +378,7 @@ export const stockApi = {
     code?: string;
     description?: string;
     location?: string;
-    sort?: "code" | "location" | "description";
+    sort?: "code" | "location" | "description" | "manual";
     direction?: "asc" | "desc";
     page?: number;
     pageSize?: number;
@@ -362,7 +402,8 @@ export const stockApi = {
     return {
       items: rows.map(({ total_count: _totalCount, ...item }) => ({
         ...item,
-        custo_contabil: Number(item.custo_contabil),
+        custo_contabil:
+          item.custo_contabil == null ? null : Number(item.custo_contabil),
         custo_fornecedor: Number(item.custo_fornecedor),
       })),
       total: rows.length ? Number(rows[0].total_count) : 0,
@@ -526,6 +567,7 @@ export const notesApi = {
   },
 
   saveNumber: async (orderId: string, number: string) => {
+    markLocalRealtimeMutation("purchase_orders_tecar", orderId);
     const { data, error } = await supabase.rpc("salvar_nota_pedido_tecar", {
       p_pedido_id: orderId,
       p_nota_numero: number.trim(),
@@ -545,6 +587,12 @@ export const notesApi = {
     checked: boolean,
     noteType: "order" | "standalone" = "order",
   ) => {
+    markLocalRealtimeMutation(
+      noteType === "standalone"
+        ? "notas_fiscais_avulsas_tecar"
+        : "purchase_orders_tecar",
+      noteId,
+    );
     const { data, error } = noteType === "standalone"
       ? await supabase.rpc("conferir_nota_avulsa_tecar", {
         p_nota_id: noteId,
@@ -755,6 +803,7 @@ export const ordersApi = {
       update_note?: boolean;
     },
   ) => {
+    markLocalRealtimeMutation("purchase_orders_tecar", id);
     const { data, error } = await supabase
       .from("purchase_orders_tecar")
       .update({
@@ -777,6 +826,7 @@ export const ordersApi = {
   },
 
   moveToTrash: async (id: string) => {
+    markLocalRealtimeMutation("purchase_orders_tecar", id);
     const { error } = await supabase.rpc("mover_pedido_lixeira_tecar", {
       p_pedido_id: id,
     });
@@ -784,6 +834,7 @@ export const ordersApi = {
   },
 
   restore: async (id: string) => {
+    markLocalRealtimeMutation("purchase_orders_tecar", id);
     const { error } = await supabase.rpc("restaurar_pedido_lixeira_tecar", {
       p_pedido_id: id,
     });
@@ -791,6 +842,7 @@ export const ordersApi = {
   },
 
   permanentlyDelete: async (id: string) => {
+    markLocalRealtimeMutation("purchase_orders_tecar", id);
     const { error } = await supabase.rpc("excluir_pedido_definitivamente_tecar", {
       p_pedido_id: id,
     });

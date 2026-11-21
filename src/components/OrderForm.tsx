@@ -7,6 +7,7 @@ import { formatCNPJ } from "../lib/cnpj";
 import { downloadOrderPDF, OrderItem, printOrderPDF } from "../lib/pdf";
 import SupplierModal from "./SupplierModal";
 import PageHeader from "./PageHeader";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 
 interface Supplier {
   id: string;
@@ -70,6 +71,7 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
   const [sourceOrderNumber, setSourceOrderNumber] = useState<number | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [confirmEmit, setConfirmEmit] = useState(false);
+  const [externalChange, setExternalChange] = useState(false);
   const searchTimeout = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const itemSearchTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
   const invoiceInputRef = useRef<HTMLInputElement>(null);
@@ -77,6 +79,9 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
   useEffect(() => {
     if (editId) loadOrder();
   }, [editId]);
+  useRealtimeRefresh(["purchase_orders_tecar"], (detail) => {
+    if (editId && detail.recordId === editId) setExternalChange(true);
+  });
 
   useEffect(() => {
     if (!duplicateId) return;
@@ -543,6 +548,11 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
           </>
         }
       />
+      {externalChange && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Este pedido foi atualizado por outro usuário
+        </div>
+      )}
 
       {error && (
         <div className="bg-red-50 border border-red-200 text-red-700 text-sm rounded-lg px-4 py-3 mb-4">
@@ -686,18 +696,30 @@ export default function OrderForm({ editId, duplicateId, onSaved, onBack }: Prop
             </div>
             <div className="order-items-wrap border border-slate-200 rounded-xl overflow-x-auto">
               <table className="order-items-table w-full text-xs">
+                <colgroup>
+                  <col className="order-item-qty-column" />
+                  <col className="order-item-unit-column" />
+                  <col className="order-item-code-column" />
+                  <col className="order-item-description-column" />
+                  <col className="order-item-unit-price-column" />
+                  <col className="order-item-discount-column" />
+                  <col className="order-item-addition-column" />
+                  <col className="order-item-ipi-column" />
+                  <col className="order-item-total-column" />
+                  <col className="order-item-action-column" />
+                </colgroup>
                 <thead>
                   <tr className="table-header text-slate-300">
-                    <th className="px-2 py-2 text-center font-medium w-14">Qtde</th>
-                    <th className="px-2 py-2 text-center font-medium w-14">Un</th>
-                    <th className="px-2 py-2 text-left font-medium w-28">Cód/Desenho</th>
+                    <th className="px-2 py-2 text-center font-medium">Qtde</th>
+                    <th className="px-2 py-2 text-center font-medium">Un</th>
+                    <th className="px-2 py-2 text-left font-medium">Cód/Desenho</th>
                     <th className="px-2 py-2 text-left font-medium">Descrição</th>
-                    <th className="px-2 py-2 text-right font-medium w-24">Vl Unitário</th>
-                    <th className="px-2 py-2 text-right font-medium w-20">Desc R$</th>
-                    <th className="px-2 py-2 text-right font-medium w-20">Acrés R$</th>
-                    <th className="px-2 py-2 text-right font-medium w-16">IPI %</th>
-                    <th className="px-2 py-2 text-right font-medium w-24">Total</th>
-                    <th className="w-8" />
+                    <th className="px-2 py-2 text-right font-medium">Vl Unitário</th>
+                    <th className="px-2 py-2 text-right font-medium">Desc R$</th>
+                    <th className="px-2 py-2 text-right font-medium">Acrés R$</th>
+                    <th className="px-2 py-2 text-right font-medium">IPI %</th>
+                    <th className="px-2 py-2 text-right font-medium">Total</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>

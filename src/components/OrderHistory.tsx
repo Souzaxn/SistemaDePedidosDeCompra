@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { ordersApi } from "../lib/api";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 import { formatCurrency, formatDate } from "../lib/format";
 import { printOrderPDF, reserveMobilePrintWindow } from "../lib/pdf";
 import PageHeader from "./PageHeader";
@@ -104,10 +105,14 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
   const [printingId, setPrintingId] = useState<string | null>(null);
   const [trashCount, setTrashCount] = useState(0);
   const [undo, setUndo] = useState<{ id: string; number: number } | null>(null);
+  const requestId = useRef(0);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setFetchError("");
+  const load = useCallback(async (silent = false) => {
+    const currentRequest = ++requestId.current;
+    if (!silent) {
+      setLoading(true);
+      setFetchError("");
+    }
     try {
       const result = await ordersApi.list({
         supplier: filterSupplier || undefined,
@@ -118,18 +123,21 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
         page,
         pageSize: PAGE_SIZE,
       });
+      if (currentRequest !== requestId.current) return;
       const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE));
       if (page > lastPage) {
         setPage(lastPage);
         return;
       }
       setOrders(result.orders);
-      setExpandedMatches(new Set());
+      if (!silent) setExpandedMatches(new Set());
       setTotalOrders(result.total);
     } catch (err: any) {
-      setFetchError("Erro ao carregar pedidos.");
+      if (currentRequest === requestId.current && !silent) {
+        setFetchError("Erro ao carregar pedidos.");
+      }
     } finally {
-      setLoading(false);
+      if (currentRequest === requestId.current) setLoading(false);
     }
   }, [filterSupplier, filterNumber, filterDateFrom, filterDateTo, debouncedPart, page]);
 
@@ -154,6 +162,10 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
     void load();
     void ordersApi.trashCount().then(setTrashCount).catch(() => setTrashCount(0));
   }, [load, refresh]);
+  useRealtimeRefresh(["purchase_orders_tecar"], () => {
+    void load(true);
+    void ordersApi.trashCount().then(setTrashCount).catch(() => undefined);
+  });
   useEffect(() => {
     if (!undo) return;
     const timer = window.setTimeout(() => setUndo(null), 6000);
@@ -365,7 +377,7 @@ export default function OrderHistory({ onView, onEdit, onDuplicate, onNew, onTra
         {fetchError ? (
           <div className="flex flex-col items-center justify-center min-h-[31rem] text-red-500 gap-2 text-sm">
             <p>{fetchError}</p>
-            <button onClick={load} className="text-blue-600 text-xs underline cursor-pointer">Tentar novamente</button>
+            <button onClick={() => void load()} className="text-blue-600 text-xs underline cursor-pointer">Tentar novamente</button>
           </div>
         ) : orders.length === 0 ? (
           <div className="flex flex-col items-center justify-center min-h-[31rem] text-slate-400 gap-2">

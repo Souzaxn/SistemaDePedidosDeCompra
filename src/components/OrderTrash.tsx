@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { ordersApi } from "../lib/api";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 import { formatCurrency, formatDateTime } from "../lib/format";
 import PageHeader from "./PageHeader";
 
@@ -25,9 +26,11 @@ export default function OrderTrash({ onBack }: { onBack: () => void }) {
   const [error, setError] = useState("");
   const [permanent, setPermanent] = useState<TrashOrder | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const result = await ordersApi.trash(page, PAGE_SIZE);
       const lastPage = Math.max(1, Math.ceil(result.total / PAGE_SIZE));
@@ -38,13 +41,14 @@ export default function OrderTrash({ onBack }: { onBack: () => void }) {
       setOrders(result.orders as TrashOrder[]);
       setTotal(result.total);
     } catch (caught: any) {
-      setError("Erro ao carregar a lixeira.");
+      if (!silent) setError("Erro ao carregar a lixeira.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [page]);
 
   useEffect(() => void load(), [load]);
+  useRealtimeRefresh(["purchase_orders_tecar"], () => void load(true));
   useEffect(() => {
     if (!permanent) return;
     const close = (event: KeyboardEvent) => {

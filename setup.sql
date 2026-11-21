@@ -51,8 +51,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS suppliers_tecar_cnpj_digits_uidx
 CREATE TABLE IF NOT EXISTS public.itens (
   codigo TEXT PRIMARY KEY,
   descricao TEXT NOT NULL DEFAULT '',
-  valor NUMERIC(14,2) NOT NULL DEFAULT 0
+  valor NUMERIC(14,2) NOT NULL DEFAULT 0,
+  origem TEXT NOT NULL DEFAULT 'manual'
 );
+ALTER TABLE public.itens
+  ADD COLUMN IF NOT EXISTS origem TEXT NOT NULL DEFAULT 'manual';
+DO $$ BEGIN
+  ALTER TABLE public.itens
+    ADD CONSTRAINT itens_origem_check CHECK (origem IN ('manual', 'importado'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- Estoque atual (separado da base de itens usada nos pedidos)
 CREATE TABLE IF NOT EXISTS public.estoque (
@@ -61,7 +68,18 @@ CREATE TABLE IF NOT EXISTS public.estoque (
   locacao TEXT NOT NULL DEFAULT '',
   custo_contabil NUMERIC(14,2) NOT NULL DEFAULT 0,
   custo_fornecedor NUMERIC(14,2) NOT NULL DEFAULT 0,
+  import_batch_id UUID NOT NULL DEFAULT pg_catalog.gen_random_uuid(),
   PRIMARY KEY (codigo, locacao)
+);
+ALTER TABLE public.estoque
+  ADD COLUMN IF NOT EXISTS import_batch_id UUID NOT NULL
+  DEFAULT pg_catalog.gen_random_uuid();
+
+-- Registros já presentes no estoque vieram de planilha.
+UPDATE public.itens i
+SET origem = 'importado'
+WHERE EXISTS (
+  SELECT 1 FROM public.estoque e WHERE e.codigo = i.codigo
 );
 
 CREATE INDEX IF NOT EXISTS estoque_codigo_idx
@@ -72,6 +90,33 @@ CREATE INDEX IF NOT EXISTS estoque_locacao_trgm_idx
   ON public.estoque USING gin (lower(locacao) gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS estoque_descricao_normalizada_trgm_idx
   ON public.estoque USING gin (public.normalizar_texto_tecar(descricao) gin_trgm_ops);
+
+-- Une o estoque da última planilha às peças cadastradas manualmente em pedidos.
+-- Quando um código existe no estoque importado, somente a versão importada aparece.
+CREATE OR REPLACE VIEW public.estoque_consulta_tecar
+WITH (security_invoker = true)
+AS
+  SELECT
+    e.codigo,
+    e.descricao,
+    e.locacao,
+    e.custo_contabil,
+    e.custo_fornecedor,
+    'importado'::TEXT AS origem
+  FROM public.estoque e
+  UNION ALL
+  SELECT
+    i.codigo,
+    i.descricao,
+    ''::TEXT AS locacao,
+    NULL::NUMERIC AS custo_contabil,
+    i.valor AS custo_fornecedor,
+    'manual'::TEXT AS origem
+  FROM public.itens i
+  WHERE i.origem = 'manual'
+    AND NOT EXISTS (
+      SELECT 1 FROM public.estoque e WHERE e.codigo = i.codigo
+    );
 
 -- Registro das importações concluídas
 CREATE TABLE IF NOT EXISTS public.estoque_importacoes (
@@ -86,6 +131,9 @@ CREATE INDEX IF NOT EXISTS estoque_importacoes_imported_at_idx
 
 -- Consulta paginada com descrição sem distinção de caixa ou acentos.
 -- Todas as palavras informadas precisam existir, em qualquer ordem.
+DROP FUNCTION IF EXISTS public.buscar_estoque_tecar(
+  TEXT, TEXT, TEXT, TEXT, TEXT, INT, INT
+);
 CREATE OR REPLACE FUNCTION public.buscar_estoque_tecar(
   p_codigo TEXT DEFAULT '',
   p_descricao TEXT DEFAULT '',
@@ -101,6 +149,7 @@ RETURNS TABLE (
   locacao TEXT,
   custo_contabil NUMERIC,
   custo_fornecedor NUMERIC,
+  origem TEXT,
   total_count BIGINT
 )
 LANGUAGE sql
@@ -119,7 +168,7 @@ AS $$
   ),
   resultados AS (
     SELECT e.*
-    FROM public.estoque e
+    FROM public.estoque_consulta_tecar e
     CROSS JOIN filtros f
     WHERE (
       f.codigo_digitado = ''
@@ -145,6 +194,7 @@ AS $$
     r.locacao,
     r.custo_contabil,
     r.custo_fornecedor,
+    r.origem,
     count(*) OVER () AS total_count
   FROM resultados r
   ORDER BY
@@ -164,6 +214,11 @@ AS $$
       THEN public.normalizar_texto_tecar(r.descricao) END ASC,
     CASE WHEN p_ordenacao = 'description' AND lower(p_direcao) = 'desc'
       THEN public.normalizar_texto_tecar(r.descricao) END DESC,
+    CASE WHEN p_ordenacao = 'manual' AND lower(p_direcao) = 'asc'
+      THEN CASE WHEN r.origem = 'manual' THEN 0 ELSE 1 END END ASC,
+    CASE WHEN p_ordenacao = 'manual' AND lower(p_direcao) = 'desc'
+      THEN CASE WHEN r.origem = 'manual' THEN 0 ELSE 1 END END DESC,
+    CASE WHEN p_ordenacao = 'manual' THEN r.codigo END ASC,
     r.codigo ASC
   LIMIT GREATEST(p_limite, 1)
   OFFSET GREATEST(p_deslocamento, 0);
@@ -857,6 +912,40 @@ ALTER TABLE public.purchase_orders_tecar ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.notas_fiscais_avulsas_tecar ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.order_drafts_tecar ENABLE ROW LEVEL SECURITY;
 
+-- Atualizações ao vivo. O bloco é idempotente e não altera as políticas RLS.
+DO $$
+DECLARE
+  tabela TEXT;
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_publication WHERE pubname = 'supabase_realtime'
+  ) THEN
+    FOREACH tabela IN ARRAY ARRAY[
+      'purchase_orders_tecar',
+      'notas_fiscais_avulsas_tecar',
+      'suppliers_tecar',
+      'itens',
+      'estoque',
+      'estoque_importacoes'
+    ]
+    LOOP
+      IF NOT EXISTS (
+        SELECT 1
+        FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime'
+          AND schemaname = 'public'
+          AND tablename = tabela
+      ) THEN
+        EXECUTE format(
+          'ALTER PUBLICATION supabase_realtime ADD TABLE public.%I',
+          tabela
+        );
+      END IF;
+    END LOOP;
+  END IF;
+END
+$$;
+
 -- Perfis: leitura pública, escrita pelo próprio usuário
 DO $$ BEGIN
   CREATE POLICY "profiles_select" ON public.profiles_tecar FOR SELECT USING (true);
@@ -903,6 +992,7 @@ DO $$ BEGIN
     WITH CHECK (auth.role() = 'authenticated');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 GRANT SELECT, INSERT, UPDATE ON public.itens TO authenticated;
+GRANT SELECT ON public.estoque_consulta_tecar TO authenticated;
 
 -- Estoque e registro de importações: todos os autenticados podem consultar
 -- e importar, sem restrição por usuário ou perfil.

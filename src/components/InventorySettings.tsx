@@ -11,6 +11,7 @@ import {
 } from "../lib/items";
 import BackupSettings from "./BackupSettings";
 import { STOCK_STALE_DAYS } from "../lib/stock";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 
 interface ImportSummary {
   read: number;
@@ -46,6 +47,10 @@ export default function InventorySettings() {
       .catch(() => setLatestImport(null))
       .finally(() => setLoadingLatest(false));
   }, []);
+  useRealtimeRefresh(["estoque_importacoes"], () => {
+    if (importing) return;
+    void stockApi.latestImport().then(setLatestImport).catch(() => undefined);
+  });
 
   const confirmWithoutBackup = (detail: string) =>
     new Promise<boolean>((resolve) => {

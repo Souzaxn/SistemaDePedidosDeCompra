@@ -5,6 +5,7 @@ import { downloadOrderPDF, printOrderPDF } from "../lib/pdf";
 import { useAuth } from "../contexts/AuthContext";
 import InvoiceNumberEditor from "./InvoiceNumberEditor";
 import PageHeader from "./PageHeader";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 
 interface Props {
   orderId: string;
@@ -19,12 +20,16 @@ export default function OrderView({ orderId, onBack, onEdit, onDuplicate, canEdi
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [printing, setPrinting] = useState(false);
+  const [externalChange, setExternalChange] = useState(false);
 
   useEffect(() => {
     ordersApi.get(orderId)
       .then((o) => { setOrder(o); setLoading(false); })
       .catch(() => setLoading(false));
   }, [orderId]);
+  useRealtimeRefresh(["purchase_orders_tecar"], (detail) => {
+    if (detail.recordId === orderId) setExternalChange(true);
+  });
 
   if (loading) return <div className="flex items-center justify-center h-48 text-slate-400 text-sm">Carregando pedido...</div>;
   if (!order) return <div className="flex items-center justify-center h-48 text-red-500 text-sm">Pedido não encontrado.</div>;
@@ -90,6 +95,11 @@ export default function OrderView({ orderId, onBack, onEdit, onDuplicate, canEdi
           </>
         }
       />
+      {externalChange && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Este pedido foi atualizado por outro usuário
+        </div>
+      )}
 
       <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
         <div className="order-brand-header px-6 py-5 text-center">

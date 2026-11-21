@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { InvoiceOrder, notesApi, ordersApi, suppliersApi } from "../lib/api";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 import { formatCurrency, formatDate, formatDateOnly, formatDateTime } from "../lib/format";
 import { validateStandaloneInvoice } from "../lib/invoices";
 import InvoiceNumberEditor from "./InvoiceNumberEditor";
@@ -45,13 +46,17 @@ function StandaloneInvoiceModal({
   const [saving, setSaving] = useState(false);
   const numberRef = useRef<HTMLInputElement>(null);
   const supplierRef = useRef<HTMLSelectElement>(null);
-
-  useEffect(() => {
-    numberRef.current?.focus();
-    suppliersApi.list().then(setSuppliers).catch((caught) => {
+  const loadSuppliers = useCallback(() => {
+    suppliersApi.list().then(setSuppliers).catch(() => {
       setRequestError("Não foi possível carregar os fornecedores.");
     });
   }, []);
+
+  useEffect(() => {
+    numberRef.current?.focus();
+    loadSuppliers();
+  }, [loadSuppliers]);
+  useRealtimeRefresh(["suppliers_tecar"], loadSuppliers);
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -259,9 +264,11 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
     setParams(next);
   };
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const result = await notesApi.list({ status, search, page, pageSize: PAGE_SIZE });
       if (!result.notes.length && page > 1) {
@@ -271,13 +278,17 @@ export default function InvoiceNotes({ onBack }: { onBack: () => void }) {
       setNotes(result.notes);
       setTotal(result.total);
     } catch (caught: any) {
-      setError("Erro ao carregar as notas.");
+      if (!silent) setError("Erro ao carregar as notas.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [status, search, page]);
 
   useEffect(() => void load(), [load]);
+  useRealtimeRefresh(
+    ["purchase_orders_tecar", "notas_fiscais_avulsas_tecar"],
+    () => void load(true),
+  );
   useEffect(() => {
     if (!undo) return;
     const timer = window.setTimeout(() => setUndo(null), 6000);
@@ -508,6 +519,7 @@ export function InvoiceNoteDetails({
   const [order, setOrder] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [externalChange, setExternalChange] = useState(false);
   const listUrl = `/notas${location.search}`;
 
   useEffect(() => {
@@ -521,6 +533,12 @@ export function InvoiceNoteDetails({
       .catch(() => setError("Nota não encontrada."))
       .finally(() => setLoading(false));
   }, [orderId]);
+  useRealtimeRefresh(
+    ["purchase_orders_tecar", "notas_fiscais_avulsas_tecar"],
+    (detail) => {
+      if (detail.recordId === orderId) setExternalChange(true);
+    },
+  );
 
   const toggle = async () => {
     try {
@@ -555,6 +573,11 @@ export function InvoiceNoteDetails({
           </button>
         ) : undefined}
       />
+      {externalChange && (
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          Este pedido foi atualizado por outro usuário
+        </div>
+      )}
 
       <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="grid gap-4 border-b border-slate-100 pb-5 md:grid-cols-3">

@@ -3,6 +3,7 @@ import { stockApi } from "../lib/api";
 import { formatCurrency, formatDate } from "../lib/format";
 import { StockImport, StockItem } from "../lib/items";
 import { STOCK_STALE_DAYS } from "../lib/stock";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 import PageHeader from "./PageHeader";
 
 const DEFAULT_PAGE_SIZE = 10;
@@ -14,7 +15,7 @@ interface Props {
   canAddToOrder?: boolean;
 }
 
-export type StockSort = "code" | "location" | "description";
+export type StockSort = "code" | "location" | "description" | "manual";
 
 const getVisiblePages = (current: number, total: number) => {
   if (total <= 5) return Array.from({ length: total }, (_, index) => index + 1);
@@ -68,10 +69,12 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
     stockApi.latestImport().then(setLatestImport).catch(() => setLatestImport(null));
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (silent = false) => {
     const currentRequest = ++requestId.current;
-    setLoading(true);
-    setError("");
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const result = await stockApi.list({
         code: filters.code,
@@ -93,9 +96,11 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
       setTotal(result.total);
     } catch (caught: any) {
       if (currentRequest !== requestId.current) return;
-      setError("Erro ao consultar o estoque.");
-      setItems([]);
-      setTotal(0);
+      if (!silent) {
+        setError("Erro ao consultar o estoque.");
+        setItems([]);
+        setTotal(0);
+      }
     } finally {
       if (currentRequest === requestId.current) setLoading(false);
     }
@@ -104,6 +109,15 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
   useEffect(() => {
     void load();
   }, [load]);
+  useRealtimeRefresh(
+    ["estoque", "itens", "estoque_importacoes"],
+    (detail) => {
+      if (detail.table === "*" || detail.table === "estoque_importacoes") {
+        void stockApi.latestImport().then(setLatestImport).catch(() => undefined);
+      }
+      if (detail.table !== "estoque_importacoes") void load(true);
+    },
+  );
 
   useEffect(() => {
     if (!isDrawer || selectedIndex === null) return;
@@ -338,6 +352,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                 <option value="code">Código</option>
                 <option value="location">Locação</option>
                 <option value="description">Ordem alfabética</option>
+                <option value="manual">Manuais primeiro</option>
               </select>
             </div>
             <button
@@ -378,7 +393,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
             <p>{error}</p>
             <button
               type="button"
-              onClick={load}
+              onClick={() => void load()}
               className="text-blue-600 text-xs underline cursor-pointer"
             >
               Tentar novamente
@@ -454,7 +469,12 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                     }`}
                   >
                     <td className={`${isDrawer ? "px-2 py-2" : "px-4 py-3"} font-mono font-semibold text-blue-700`}>
-                      {item.codigo}
+                      <span>{item.codigo}</span>
+                      {item.origem === "manual" && (
+                        <span className="ml-1.5 inline-flex rounded-md bg-slate-100 px-1.5 py-0.5 font-sans text-[10px] font-semibold text-slate-500">
+                          Manual
+                        </span>
+                      )}
                     </td>
                     <td className={`${isDrawer ? "px-2 py-0.5" : "px-4 py-3"} text-slate-800`}>
                       <span className={isDrawer ? "stock-description" : ""}>{item.descricao}</span>
@@ -463,7 +483,7 @@ export default function StockSearch({ variant = "page", onClose, onBack, canAddT
                       {item.locacao || "—"}
                     </td>
                     <td className={`${isDrawer ? "px-1 py-2" : "px-4 py-3"} whitespace-nowrap text-right text-slate-700`}>
-                      {formatCurrency(item.custo_contabil)}
+                      {item.custo_contabil == null ? "—" : formatCurrency(item.custo_contabil)}
                     </td>
                     <td className={`${isDrawer ? "px-1 py-2" : "px-4 py-3"} whitespace-nowrap text-right font-semibold text-slate-900`}>
                       {formatCurrency(item.custo_fornecedor)}

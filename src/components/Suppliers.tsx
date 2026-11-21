@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../contexts/AuthContext";
 import { suppliersApi } from "../lib/api";
+import { useRealtimeRefresh } from "../hooks/useRealtimeRefresh";
 import SupplierModal from "./SupplierModal";
 import PageHeader from "./PageHeader";
 
@@ -35,21 +36,24 @@ export default function Suppliers() {
     return () => window.clearTimeout(timer);
   }, [search]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError("");
+  const load = useCallback(async (silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     try {
       const result = await suppliersApi.paged({ search: query, page, pageSize: PAGE_SIZE });
       setSuppliers(result.suppliers as Supplier[]);
       setTotal(result.total);
     } catch (caught: any) {
-      setError("Erro ao carregar fornecedores.");
+      if (!silent) setError("Erro ao carregar fornecedores.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [query, page]);
 
   useEffect(() => { void load(); }, [load]);
+  useRealtimeRefresh(["suppliers_tecar"], () => void load(true));
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
       if (event.key === "Escape") {

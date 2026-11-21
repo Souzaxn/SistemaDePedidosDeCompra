@@ -2,14 +2,16 @@ export interface InventoryItem {
   codigo: string;
   descricao: string;
   valor: number;
+  origem?: "manual" | "importado";
 }
 
 export interface StockItem {
   codigo: string;
   descricao: string;
   locacao: string;
-  custo_contabil: number;
+  custo_contabil: number | null;
   custo_fornecedor: number;
+  origem?: "manual" | "importado";
 }
 
 export interface StockImport {
